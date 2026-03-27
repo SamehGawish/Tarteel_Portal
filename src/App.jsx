@@ -6,9 +6,6 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-console.log("URL:", import.meta.env.VITE_SUPABASE_URL);
-console.log("KEY:", import.meta.env.VITE_SUPABASE_ANON_KEY);
-
 // ─── Mappers: DB → App ───────────────────────────────────────────────────────
 function mapPersonFromDb(p) {
   return {
@@ -367,26 +364,31 @@ export default function App() {
       let familyId = form.familyId;
       let familyData;
 
-      setFamilies(prev => {
-        let u = prev.slice();
-        if (!familyId) { const existing = u.find(fm => (mcPhone && fm.phone && fm.phone === mcPhone) || (mcEmail && fm.email && fm.email === mcEmail)); if (existing) familyId = existing.id; }
-        if (familyId) {
-          familyData = u.find(fm => fm.id === familyId);
-          if (familyData) { familyData = { ...familyData, personIds: [...new Set([...(familyData.personIds || []), personId])] }; return u.map(fm => fm.id === familyId ? familyData : fm); }
-        }
+      // Resolve family outside of setState so we have it synchronously
+      const existingFamily = families.find(fm =>
+        fm.id === familyId ||
+        (mcPhone && fm.phone && fm.phone === mcPhone) ||
+        (mcEmail && fm.email && fm.email === mcEmail)
+      );
+
+      if (existingFamily) {
+        familyId = existingFamily.id;
+        familyData = { ...existingFamily, personIds: [...new Set([...(existingFamily.personIds || []), personId])] };
+      } else {
         familyId = uid();
         familyData = { id: familyId, name: mcName, phone: mcPhone, email: mcEmail, personIds: [personId] };
-        return [...u, familyData];
+      }
+
+      // Update local families state
+      setFamilies(prev => {
+        const idx = prev.findIndex(fm => fm.id === familyId);
+        if (idx >= 0) { const u = prev.slice(); u[idx] = familyData; return u; }
+        return [...prev, familyData];
       });
 
-      // Save family to Supabase (after state update settles)
-      setTimeout(async () => {
-        setFamilies(prev => {
-          const fd = prev.find(fm => fm.id === familyId);
-          if (fd) supabase.from("families").upsert(mapFamilyToDb(fd));
-          return prev;
-        });
-      }, 50);
+      // Save family to Supabase directly (don't rely on state)
+      const { error: familyErr } = await supabase.from("families").upsert(mapFamilyToDb(familyData));
+      if (familyErr) throw familyErr;
 
       if (form.editingEnrollId) {
         const updatedEnroll = enrollments.find(e => e.id === form.editingEnrollId);
