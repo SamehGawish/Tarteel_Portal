@@ -296,11 +296,16 @@ export default function App() {
 
   useEffect(() => {
     if (form.editingEnrollId || form.linkedPersonId) return;
-    const rawQ = [form.phone, form.email, form.parent1Phone, form.parent1Email, form.parent2Phone, form.parent2Email, form.emergencyPhone].filter(v => v && v.length > 5);
+    if (form.program !== "juniors") { f("matchSuggestions", []); return; }
+    const rawQ = [form.parent1Phone, form.parent1Email, form.parent2Phone, form.parent2Email].filter(v => v && v.length > 5);
     if (!rawQ.length) { f("matchSuggestions", []); return; }
     const queries = rawQ.map(s => s.replace(/\D/g, "") || s.toLowerCase());
-    f("matchSuggestions", persons.filter(p => { if (p.id === form.personId) return false; const fields = [p.phone, p.email, p.parent1Phone, p.parent1Email, p.parent2Phone, p.parent2Email].filter(Boolean).map(s => s.replace(/\D/g, "") || s.toLowerCase()); return fields.some(fld => queries.some(q => q.length > 4 && fld.includes(q))); }).slice(0, 3));
-  }, [form.phone, form.email, form.parent1Phone, form.parent1Email, form.parent2Phone, form.parent2Email, form.emergencyPhone]);
+    f("matchSuggestions", persons.filter(p => {
+      if (p.id === form.personId) return false;
+      const fields = [p.parent1Phone, p.parent1Email, p.parent2Phone, p.parent2Email].filter(Boolean).map(s => s.replace(/\D/g, "") || s.toLowerCase());
+      return fields.some(fld => queries.some(q => q.length > 4 && fld.includes(q)));
+    }).slice(0, 3));
+  }, [form.parent1Phone, form.parent1Email, form.parent2Phone, form.parent2Email, form.program]);
 
   function linkPerson(p) {
     const fam = families.find(fm => fm.personIds && fm.personIds.includes(p.id));
@@ -356,39 +361,40 @@ export default function App() {
       setPersons(prev => { const idx = prev.findIndex(p => p.id === personId); if (idx >= 0) { const u = prev.slice(); u[idx] = personData; return u; } return [...prev, personData]; });
 
       // Resolve family
-      const mcPhone = isAdult ? form.phone : (form.mainContact === "parent2" ? form.parent2Phone : form.parent1Phone);
-      const mcEmail = isAdult ? form.email : (form.mainContact === "parent2" ? form.parent2Email : form.parent1Email);
-      const mcFirst = isAdult ? form.firstName : (form.mainContact === "parent2" ? form.parent2First : form.parent1First);
-      const mcLast = isAdult ? form.lastName : (form.mainContact === "parent2" ? form.parent2Last : form.parent1Last);
-      const mcName = [mcFirst, mcLast].filter(Boolean).join(" ") || `${form.firstName}'s Parent`;
-      let familyId = form.familyId;
-      let familyData;
+      // Only create/update families for Juniors
+      if (form.program === "juniors") {
+        const famPhone = form.parent1Phone || form.parent2Phone || "";
+        const famEmail = form.parent1Email || form.parent2Email || "";
+        const famName = [form.parent1First, form.parent1Last].filter(Boolean).join(" ") || `${form.firstName}'s Family`;
+        let familyId = form.familyId;
+        let familyData;
 
-      // Resolve family outside of setState so we have it synchronously
-      const existingFamily = families.find(fm =>
-        fm.id === familyId ||
-        (mcPhone && fm.phone && fm.phone === mcPhone) ||
-        (mcEmail && fm.email && fm.email === mcEmail)
-      );
+        // Match existing family by phone or email
+        const existingFamily = families.find(fm =>
+          fm.id === familyId ||
+          (famPhone && fm.phone && fm.phone === famPhone) ||
+          (famEmail && fm.email && fm.email === famEmail)
+        );
 
-      if (existingFamily) {
-        familyId = existingFamily.id;
-        familyData = { ...existingFamily, personIds: [...new Set([...(existingFamily.personIds || []), personId])] };
-      } else {
-        familyId = uid();
-        familyData = { id: familyId, name: mcName, phone: mcPhone, email: mcEmail, personIds: [personId] };
+        if (existingFamily) {
+          familyId = existingFamily.id;
+          familyData = { ...existingFamily, personIds: [...new Set([...(existingFamily.personIds || []), personId])] };
+        } else {
+          familyId = uid();
+          familyData = { id: familyId, name: famName, phone: famPhone, email: famEmail, personIds: [personId] };
+        }
+
+        // Update local families state
+        setFamilies(prev => {
+          const idx = prev.findIndex(fm => fm.id === familyId);
+          if (idx >= 0) { const u = prev.slice(); u[idx] = familyData; return u; }
+          return [...prev, familyData];
+        });
+
+        // Save family to Supabase
+        const { error: familyErr } = await supabase.from("families").upsert(mapFamilyToDb(familyData));
+        if (familyErr) throw familyErr;
       }
-
-      // Update local families state
-      setFamilies(prev => {
-        const idx = prev.findIndex(fm => fm.id === familyId);
-        if (idx >= 0) { const u = prev.slice(); u[idx] = familyData; return u; }
-        return [...prev, familyData];
-      });
-
-      // Save family to Supabase directly (don't rely on state)
-      const { error: familyErr } = await supabase.from("families").upsert(mapFamilyToDb(familyData));
-      if (familyErr) throw familyErr;
 
       if (form.editingEnrollId) {
         const updatedEnroll = enrollments.find(e => e.id === form.editingEnrollId);
@@ -469,6 +475,52 @@ export default function App() {
       setEnrollments(newEnrollments);
     } catch (err) { alert("Error saving: " + (err.message || JSON.stringify(err))); }
     setEditPaymentModal(null); setSaving(false);
+  }
+
+  async function deleteEnrollment(enrollmentId) {
+    if (!window.confirm("Delete this enrollment? This cannot be undone.")) return;
+    setSaving(true);
+    try {
+      const enroll = enrollments.find(e => e.id === enrollmentId);
+      if (!enroll) return;
+
+      // Delete enrollment from Supabase
+      const { error: eErr } = await supabase.from("enrollments").delete().eq("id", enrollmentId);
+      if (eErr) throw eErr;
+
+      const newEnrollments = enrollments.filter(e => e.id !== enrollmentId);
+      setEnrollments(newEnrollments);
+
+      // Check if person has any other enrollments
+      const personHasOtherEnrollments = newEnrollments.some(e => e.personId === enroll.personId);
+      if (!personHasOtherEnrollments) {
+        // Delete person from Supabase
+        const { error: pErr } = await supabase.from("persons").delete().eq("id", enroll.personId);
+        if (pErr) throw pErr;
+        setPersons(prev => prev.filter(p => p.id !== enroll.personId));
+
+        // Remove person from their family
+        const fam = families.find(fm => fm.personIds && fm.personIds.includes(enroll.personId));
+        if (fam) {
+          const newPersonIds = fam.personIds.filter(id => id !== enroll.personId);
+          if (newPersonIds.length === 0) {
+            // Delete the whole family if no members left
+            const { error: fErr } = await supabase.from("families").delete().eq("id", fam.id);
+            if (fErr) throw fErr;
+            setFamilies(prev => prev.filter(f => f.id !== fam.id));
+          } else {
+            // Update family with remaining members
+            const updatedFam = { ...fam, personIds: newPersonIds };
+            const { error: fErr } = await supabase.from("families").upsert(mapFamilyToDb(updatedFam));
+            if (fErr) throw fErr;
+            setFamilies(prev => prev.map(f => f.id === fam.id ? updatedFam : f));
+          }
+        }
+      }
+    } catch (err) {
+      alert("Error deleting: " + (err.message || JSON.stringify(err)));
+    }
+    setSaving(false);
   }
 
   async function deletePayment(enrollmentId, paymentId) {
@@ -676,7 +728,7 @@ export default function App() {
                       <td style={{ fontSize: 12 }}>{activeProg === "juniors" ? (JUNIOR_LEVELS[e.level] || "-") : (e.levelName || "-")}</td>
                       <td><span className={e.paymentType === "full" ? "bgg" : e.paymentType === "waived" ? "bgld" : "bgry"} style={{ fontSize: 10 }}>{ptypeLabel(e.paymentType)}</span>{lastPay && <div style={{ fontSize: 10, color: "#bbb" }}>{fmtDate(lastPay.date)}</div>}</td>
                       <td><span className={bal > 0 ? "brr" : "bgg"} style={{ fontSize: 11 }}>{`$${bal.toFixed(2)}`}</span></td>
-                      <td><div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}><button className="btn bg bxs" onClick={() => openEditEnrollment(e)}>Edit</button>{["instalment", "partial", "discounted"].includes(e.paymentType) && bal > 0 && <button className="btn bgold bxs" onClick={() => setPaymentModal({ enrollmentId: e.id })}>+Pay</button>}{lastPay && <button className="btn bo bxs" onClick={() => issueReceiptFor(e, lastPay)}>Rec.</button>}</div></td>
+                      <td><div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}><button className="btn bg bxs" onClick={() => openEditEnrollment(e)}>Edit</button>{["instalment", "partial", "discounted"].includes(e.paymentType) && bal > 0 && <button className="btn bgold bxs" onClick={() => setPaymentModal({ enrollmentId: e.id })}>+Pay</button>}{lastPay && <button className="btn bo bxs" onClick={() => issueReceiptFor(e, lastPay)}>Rec.</button>}<button className="btn bd bxs" onClick={() => deleteEnrollment(e.id)}>Del</button></div></td>
                     </tr>
                   );
                 })}
@@ -756,7 +808,7 @@ export default function App() {
     if (view === "families") return (
       <div className="fade" style={{ padding: pad }}>
         <h1 style={{ fontSize: isMobile ? 20 : 24, fontWeight: 700, marginBottom: 4 }}>Families</h1>
-        <p style={{ color: "#aaa", fontSize: 13, marginBottom: 14 }}>{`${families.length} ${families.length === 1 ? "family" : "families"}`}</p>
+        <p style={{ color: "#aaa", fontSize: 13, marginBottom: 14 }}>{`${families.length} ${families.length === 1 ? "family" : "families"} — Tarteel Juniors`}</p>
         {families.length === 0 ? <div className="card" style={{ textAlign: "center", padding: 40, color: "#ccc" }}>No families yet.</div>
           : families.map(fam => {
             const billing = calcFamilyBilling(fam, persons, enrollments, semesterMonths);
@@ -795,7 +847,7 @@ export default function App() {
                               <div key={e.id} style={{ background: "#fafaf8", borderRadius: 8, padding: "10px 12px", marginBottom: 6 }}>
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, flexWrap: "wrap", gap: 4 }}>
                                   <div style={{ display: "flex", gap: 5, alignItems: "center", flexWrap: "wrap" }}><span className={ppill(e.program)}>{PROGRAMS[e.program]}</span>{e.levelName && <span style={{ fontSize: 11 }}>{e.levelName}</span>}<span style={{ fontSize: 12 }}>{e.teacherName}</span></div>
-                                  <div style={{ display: "flex", gap: 4, alignItems: "center" }}><span className={eBal > 0 ? "brr" : "bgg"} style={{ fontSize: 11 }}>{`$${eBal.toFixed(2)}`}</span><button className="btn bg bxs" onClick={() => openEditEnrollment(e)}>Edit</button>{["instalment", "partial", "discounted"].includes(e.paymentType) && eBal > 0 && <button className="btn bgold bxs" onClick={() => setPaymentModal({ enrollmentId: e.id })}>+Pay</button>}</div>
+                                  <div style={{ display: "flex", gap: 4, alignItems: "center" }}><span className={eBal > 0 ? "brr" : "bgg"} style={{ fontSize: 11 }}>{`${eBal.toFixed(2)}`}</span><button className="btn bg bxs" onClick={() => openEditEnrollment(e)}>Edit</button>{["instalment", "partial", "discounted"].includes(e.paymentType) && eBal > 0 && <button className="btn bgold bxs" onClick={() => setPaymentModal({ enrollmentId: e.id })}>+Pay</button>}<button className="btn bd bxs" onClick={() => deleteEnrollment(e.id)}>Del</button></div>
                                 </div>
                                 {e.paymentHistory && e.paymentHistory.map((h, hi) => (
                                   <div key={hi} className="hr">
