@@ -89,6 +89,17 @@ const RELATIONSHIPS = ["Father", "Mother", "Spouse", "Sibling", "Grandparent", "
 const SEMESTER_MONTHS_DEFAULT = 5;
 const SCHOOL_NAME = "Tarteel Ottawa Quran Institute";
 const SCHOOL_ADDRESS = "251 Northwestern Ave, Ottawa, ON, K1Y 0M1";
+const DEFAULT_SEMESTER_LABEL = "Fall " + new Date().getFullYear();
+const DEFAULT_JUNIOR_TEACHERS = [{ id: "j1", name: "Ustadh Ibrahim Al-Sayed", levels: [0, 1] }, { id: "j2", name: "Ustadha Fatima Noor", levels: [1, 2] }, { id: "j3", name: "Ustadh Khalid Mansour", levels: [2, 3] }, { id: "j4", name: "Ustadha Maryam Hasan", levels: [3, 4] }, { id: "j5", name: "Ustadh Yusuf Al-Rashid", levels: [0, 2, 4] }];
+const DEFAULT_ADULT_TEACHERS = { brothers: [{ id: "b1", name: "Sh. Saad", monthlyRate: 50 }, { id: "b2", name: "Sh. Abu Kudus", monthlyRate: 100 }, { id: "b3", name: "Ust. Abdullah", monthlyRate: 50 }], sisters: [{ id: "s1", name: "Ust. Reham", monthlyRate: 50 }, { id: "s2", name: "Ust. Asmaa", monthlyRate: 50 }, { id: "s3", name: "Ust. Masa", monthlyRate: 100 }, { id: "s4", name: "Ust. Kauthar", monthlyRate: 100 }, { id: "s5", name: "Ust. Karima", monthlyRate: 100 }] };
+const DEFAULT_ADULT_LEVELS = { brothers: ["Beginners", "Intermediate", "Advanced"], sisters: ["Beginners", "Intermediate", "Advanced"] };
+const STORAGE_KEYS = {
+  semesterLabel: "tarteel:semester-label",
+  semesterMonths: "tarteel:semester-months",
+  juniorTeachers: "tarteel:junior-teachers",
+  adultTeachers: "tarteel:adult-teachers",
+  adultLevels: "tarteel:adult-levels",
+};
 const NAV_ITEMS = [
   { id: "dashboard", icon: "⊞", label: "Dashboard" },
   { id: "enroll", icon: "＋", label: "Enroll" },
@@ -101,6 +112,34 @@ const NAV_ITEMS = [
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function getJuniorBaseRate(n) { if (n === 1) return 210; if (n === 2) return 190; if (n === 3) return 170; return 150; }
+function readStoredJson(key, fallback) {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
+function readStoredString(key, fallback) {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw || fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
+function readStoredNumber(key, fallback) {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(key);
+    const parsed = parseInt(raw || "", 10);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
 function calcFamilyBilling(family, persons, enrollments, semMonths) {
   const memberIds = family.personIds || [];
   const active = enrollments.filter(e => memberIds.includes(e.personId) && e.active);
@@ -134,6 +173,11 @@ function isEnrollmentEffectivelyPaid(e) {
 }
 function enrollBalance(e) { return isEnrollmentEffectivelyPaid(e) ? 0 : Math.max(0, (e.semesterTotal || 0) - (e.amountPaid || 0)); }
 function cleanPhone(v) { return (v || "").replace(/\D/g, "").slice(0, 10); }
+function sanitizeMoneyInput(v) {
+  const cleaned = (v || "").replace(/[^\d.]/g, "");
+  const [whole = "", ...rest] = cleaned.split(".");
+  return rest.length ? `${whole}.${rest.join("").slice(0, 2)}` : whole;
+}
 function validEmail(v) { return !v || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v); }
 function fmtPhone(v) { const d = (v || "").replace(/\D/g, ""); if (d.length < 4) return d; if (d.length < 7) return `(${d.slice(0, 3)}) ${d.slice(3)}`; return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6, 10)}`; }
 function today() { return new Date().toLocaleDateString("en-CA"); }
@@ -245,6 +289,9 @@ function EmailInput({ value, onChange, placeholder }) {
   const [err, setErr] = useState("");
   return <div><input value={value} type="email" onChange={e => { onChange(e.target.value); setErr(e.target.value && !validEmail(e.target.value) ? "Invalid email" : ""); }} placeholder={placeholder || "email@example.com"} style={{ width: "100%", padding: "10px 13px", border: `1.5px solid ${err ? "#e74c3c" : "#ddd"}`, borderRadius: 8, fontSize: 15, fontFamily: "inherit", background: "#fafafa", color: "#1a1a1a" }} />{err && <div style={{ fontSize: 11, color: "#e74c3c", marginTop: 2 }}>{err}</div>}</div>;
 }
+function MoneyInput({ value, onChange, placeholder, autoFocus = false }) {
+  return <input type="text" inputMode="decimal" value={value} onChange={e => onChange(sanitizeMoneyInput(e.target.value))} placeholder={placeholder} autoFocus={autoFocus} />;
+}
 
 function ReceiptView({ person, enrollment, payment, receiptNum, semesterLabel, onClose }) {
   const bal = enrollBalance(enrollment); const isCredit = bal < 0;
@@ -321,11 +368,11 @@ export default function App() {
   const [persons, setPersons] = useState([]);
   const [families, setFamilies] = useState([]);
   const [enrollments, setEnrollments] = useState([]);
-  const [semesterLabel, setSemesterLabel] = useState("Fall " + new Date().getFullYear());
-  const [semesterMonths, setSemesterMonths] = useState(SEMESTER_MONTHS_DEFAULT);
-  const [juniorTeachers, setJuniorTeachers] = useState([{ id: "j1", name: "Ustadh Ibrahim Al-Sayed", levels: [0, 1] }, { id: "j2", name: "Ustadha Fatima Noor", levels: [1, 2] }, { id: "j3", name: "Ustadh Khalid Mansour", levels: [2, 3] }, { id: "j4", name: "Ustadha Maryam Hasan", levels: [3, 4] }, { id: "j5", name: "Ustadh Yusuf Al-Rashid", levels: [0, 2, 4] }]);
-  const [adultTeachers, setAdultTeachers] = useState({ brothers: [{ id: "b1", name: "Sh. Saad", monthlyRate: 50 }, { id: "b2", name: "Sh. Abu Kudus", monthlyRate: 100 }, { id: "b3", name: "Ust. Abdullah", monthlyRate: 50 }], sisters: [{ id: "s1", name: "Ust. Reham", monthlyRate: 50 }, { id: "s2", name: "Ust. Asmaa", monthlyRate: 50 }, { id: "s3", name: "Ust. Masa", monthlyRate: 100 }, { id: "s4", name: "Ust. Kauthar", monthlyRate: 100 }, { id: "s5", name: "Ust. Karima", monthlyRate: 100 }] });
-  const [adultLevels, setAdultLevels] = useState({ brothers: ["Beginners", "Intermediate", "Advanced"], sisters: ["Beginners", "Intermediate", "Advanced"] });
+  const [semesterLabel, setSemesterLabel] = useState(() => readStoredString(STORAGE_KEYS.semesterLabel, DEFAULT_SEMESTER_LABEL));
+  const [semesterMonths, setSemesterMonths] = useState(() => readStoredNumber(STORAGE_KEYS.semesterMonths, SEMESTER_MONTHS_DEFAULT));
+  const [juniorTeachers, setJuniorTeachers] = useState(() => readStoredJson(STORAGE_KEYS.juniorTeachers, DEFAULT_JUNIOR_TEACHERS));
+  const [adultTeachers, setAdultTeachers] = useState(() => readStoredJson(STORAGE_KEYS.adultTeachers, DEFAULT_ADULT_TEACHERS));
+  const [adultLevels, setAdultLevels] = useState(() => readStoredJson(STORAGE_KEYS.adultLevels, DEFAULT_ADULT_LEVELS));
   const [form, setForm] = useState(INIT_FORM);
   const [selectedFamilyId, setSelectedFamilyId] = useState(null);
   const [paymentModal, setPaymentModal] = useState(null);
@@ -367,6 +414,11 @@ export default function App() {
     }
     loadData();
   }, [session]);
+  useEffect(() => { if (typeof window !== "undefined") window.localStorage.setItem(STORAGE_KEYS.semesterLabel, semesterLabel); }, [semesterLabel]);
+  useEffect(() => { if (typeof window !== "undefined") window.localStorage.setItem(STORAGE_KEYS.semesterMonths, String(semesterMonths)); }, [semesterMonths]);
+  useEffect(() => { if (typeof window !== "undefined") window.localStorage.setItem(STORAGE_KEYS.juniorTeachers, JSON.stringify(juniorTeachers)); }, [juniorTeachers]);
+  useEffect(() => { if (typeof window !== "undefined") window.localStorage.setItem(STORAGE_KEYS.adultTeachers, JSON.stringify(adultTeachers)); }, [adultTeachers]);
+  useEffect(() => { if (typeof window !== "undefined") window.localStorage.setItem(STORAGE_KEYS.adultLevels, JSON.stringify(adultLevels)); }, [adultLevels]);
 
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
   const age = parseInt(form.age) || 0;
@@ -864,8 +916,8 @@ export default function App() {
             <>
               <div className="r2" style={{ marginBottom: 12 }}><div className="fg"><label>Type *</label><select value={form.paymentType} onChange={e => f("paymentType", e.target.value)}><option value="full">Paid in Full</option><option value="partial">Partially Paid</option><option value="instalment">Instalments</option><option value="discounted">Discounted</option><option value="waived">Waived</option></select></div>{(form.paymentType === "full" || form.paymentType === "discounted") && <div className="fg"><label>Date</label><input type="date" value={form.paymentDate} onChange={e => f("paymentDate", e.target.value)} /></div>}</div>
               {form.paymentType === "full" && <div className="r2"><div className="fg"><label>Method</label><select value={form.paymentMethod} onChange={e => f("paymentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div><div className="fg"><label>Note</label><input value={form.paymentNote} onChange={e => f("paymentNote", e.target.value)} placeholder="Optional" /></div></div>}
-              {form.paymentType === "discounted" && <div><div className="r2" style={{ marginBottom: 10 }}><div className="fg"><label>Amount ($)</label><input type="number" value={form.discountedAmount} onChange={e => f("discountedAmount", e.target.value)} /></div><div className="fg"><label>Method</label><select value={form.paymentMethod} onChange={e => f("paymentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div></div></div>}
-              {(form.paymentType === "instalment" || form.paymentType === "partial") && <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 12 }}><div style={{ fontSize: 12, color: "#aaa", marginBottom: 8 }}>{form.paymentType === "partial" ? "Amount paid so far" : "Initial payment today"}</div><div className="r2" style={{ marginBottom: 8 }}><div className="fg"><label>Amount ($)</label><input type="number" value={form.instalmentPaid} onChange={e => f("instalmentPaid", e.target.value)} /></div><div className="fg"><label>Date</label><input type="date" value={form.instalmentDate} onChange={e => f("instalmentDate", e.target.value)} /></div></div><div className="fg"><label>Method</label><select value={form.instalmentMethod} onChange={e => f("instalmentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div></div>}
+              {form.paymentType === "discounted" && <div><div className="r2" style={{ marginBottom: 10 }}><div className="fg"><label>Amount ($)</label><MoneyInput value={form.discountedAmount} onChange={v => f("discountedAmount", v)} /></div><div className="fg"><label>Method</label><select value={form.paymentMethod} onChange={e => f("paymentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div></div></div>}
+              {(form.paymentType === "instalment" || form.paymentType === "partial") && <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 12 }}><div style={{ fontSize: 12, color: "#aaa", marginBottom: 8 }}>{form.paymentType === "partial" ? "Amount paid so far" : "Initial payment today"}</div><div className="r2" style={{ marginBottom: 8 }}><div className="fg"><label>Amount ($)</label><MoneyInput value={form.instalmentPaid} onChange={v => f("instalmentPaid", v)} /></div><div className="fg"><label>Date</label><input type="date" value={form.instalmentDate} onChange={e => f("instalmentDate", e.target.value)} /></div></div><div className="fg"><label>Method</label><select value={form.instalmentMethod} onChange={e => f("instalmentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div></div>}
               {form.paymentType === "waived" && <div className="fg"><label>Reason</label><select value={form.waiverType} onChange={e => f("waiverType", e.target.value)}>{WAIVER_TYPES.map(w => <option key={w}>{w}</option>)}</select></div>}
             </>
           ) : (
@@ -1069,9 +1121,9 @@ export default function App() {
         </div>
       )}
 
-      {paymentModal && (() => { const enroll = enrollments.find(e => e.id === paymentModal.enrollmentId); const person = enroll ? persons.find(p => p.id === enroll.personId) : null; const bal = enroll ? enrollBalance(enroll) : 0; if (!enroll || !person) return null; return <div className="mbg" onClick={() => setPaymentModal(null)}><div className="modal fade" onClick={e => e.stopPropagation()}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}><h2 style={{ fontSize: 19, fontWeight: 700 }}>Record Payment</h2><button className="btn" onClick={() => setPaymentModal(null)} style={{ fontSize: 20, color: "#bbb", padding: "0 6px" }}>x</button></div><div style={{ background: "#f8f6f1", borderRadius: 10, padding: 12, marginBottom: 14 }}><div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}><span className="sn">{person.studentNum}</span><span style={{ fontWeight: 700 }}>{`${person.firstName} ${person.lastName}`}</span></div><div style={{ fontSize: 12, color: "#888" }}>{`${PROGRAMS[enroll.program]} — ${enroll.teacherName}`}</div><div style={{ fontSize: 13, marginTop: 3 }}>{"Balance: "}<span style={{ color: "var(--red)", fontWeight: 700 }}>{`$${bal.toFixed(2)}`}</span></div></div><div className="r2" style={{ marginBottom: 12 }}><div className="fg"><label>Amount ($) *</label><input type="number" value={instalment.amount} onChange={e => setInstalment(p => ({ ...p, amount: e.target.value }))} placeholder={`Up to $${bal.toFixed(2)}`} autoFocus /></div><div className="fg"><label>Date *</label><input type="date" value={instalment.date} onChange={e => setInstalment(p => ({ ...p, date: e.target.value }))} /></div></div><div className="fg" style={{ marginBottom: 12 }}><label>Method</label><select value={instalment.method} onChange={e => setInstalment(p => ({ ...p, method: e.target.value }))}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div><div className="fg" style={{ marginBottom: 12 }}><label>Note</label><input value={instalment.note} onChange={e => setInstalment(p => ({ ...p, note: e.target.value }))} placeholder="Optional" /></div><div style={{ background: "#fef5e4", border: "1px solid #f0d080", borderRadius: 8, padding: 10, marginBottom: 14 }}><div style={{ fontSize: 11, fontWeight: 700, color: "var(--gold)", marginBottom: 6 }}>Override Balance (optional)</div><div className="fg"><label>Custom balance ($)</label><input type="number" value={customBal} onChange={e => setCustomBal(e.target.value)} placeholder={`Auto: $${Math.max(0, bal - (parseFloat(instalment.amount) || 0)).toFixed(2)}`} /></div></div><div style={{ display: "flex", gap: 8 }}><button className="btn bp" onClick={addPayment} disabled={saving}>{saving ? "Saving..." : "Confirm & Receipt"}</button><button className="btn bg" onClick={() => { setPaymentModal(null); setCustomBal(""); }}>Cancel</button></div></div></div>; })()}
+      {paymentModal && (() => { const enroll = enrollments.find(e => e.id === paymentModal.enrollmentId); const person = enroll ? persons.find(p => p.id === enroll.personId) : null; const bal = enroll ? enrollBalance(enroll) : 0; if (!enroll || !person) return null; return <div className="mbg" onClick={() => setPaymentModal(null)}><div className="modal fade" onClick={e => e.stopPropagation()}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}><h2 style={{ fontSize: 19, fontWeight: 700 }}>Record Payment</h2><button className="btn" onClick={() => setPaymentModal(null)} style={{ fontSize: 20, color: "#bbb", padding: "0 6px" }}>x</button></div><div style={{ background: "#f8f6f1", borderRadius: 10, padding: 12, marginBottom: 14 }}><div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}><span className="sn">{person.studentNum}</span><span style={{ fontWeight: 700 }}>{`${person.firstName} ${person.lastName}`}</span></div><div style={{ fontSize: 12, color: "#888" }}>{`${PROGRAMS[enroll.program]} — ${enroll.teacherName}`}</div><div style={{ fontSize: 13, marginTop: 3 }}>{"Balance: "}<span style={{ color: "var(--red)", fontWeight: 700 }}>{`$${bal.toFixed(2)}`}</span></div></div><div className="r2" style={{ marginBottom: 12 }}><div className="fg"><label>Amount ($) *</label><MoneyInput value={instalment.amount} onChange={v => setInstalment(p => ({ ...p, amount: v }))} placeholder={`Up to $${bal.toFixed(2)}`} autoFocus /></div><div className="fg"><label>Date *</label><input type="date" value={instalment.date} onChange={e => setInstalment(p => ({ ...p, date: e.target.value }))} /></div></div><div className="fg" style={{ marginBottom: 12 }}><label>Method</label><select value={instalment.method} onChange={e => setInstalment(p => ({ ...p, method: e.target.value }))}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div><div className="fg" style={{ marginBottom: 12 }}><label>Note</label><input value={instalment.note} onChange={e => setInstalment(p => ({ ...p, note: e.target.value }))} placeholder="Optional" /></div><div style={{ background: "#fef5e4", border: "1px solid #f0d080", borderRadius: 8, padding: 10, marginBottom: 14 }}><div style={{ fontSize: 11, fontWeight: 700, color: "var(--gold)", marginBottom: 6 }}>Override Balance (optional)</div><div className="fg"><label>Custom balance ($)</label><MoneyInput value={customBal} onChange={setCustomBal} placeholder={`Auto: $${Math.max(0, bal - (parseFloat(instalment.amount) || 0)).toFixed(2)}`} /></div></div><div style={{ display: "flex", gap: 8 }}><button className="btn bp" onClick={addPayment} disabled={saving}>{saving ? "Saving..." : "Confirm & Receipt"}</button><button className="btn bg" onClick={() => { setPaymentModal(null); setCustomBal(""); }}>Cancel</button></div></div></div>; })()}
 
-      {editPaymentModal && (() => { const enroll = enrollments.find(e => e.id === editPaymentModal.enrollmentId); const person = enroll ? persons.find(p => p.id === enroll.personId) : null; if (!enroll || !person) return null; return <div className="mbg" onClick={() => setEditPaymentModal(null)}><div className="modal fade" onClick={e => e.stopPropagation()}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}><h2 style={{ fontSize: 19, fontWeight: 700 }}>Edit Payment</h2><button className="btn" onClick={() => setEditPaymentModal(null)} style={{ fontSize: 20, color: "#bbb", padding: "0 6px" }}>x</button></div><div style={{ background: "#f8f6f1", borderRadius: 10, padding: 10, marginBottom: 14, fontSize: 13 }}><span className="sn" style={{ marginRight: 7 }}>{person.studentNum}</span><strong>{`${person.firstName} ${person.lastName}`}</strong></div><div className="r2" style={{ marginBottom: 12 }}><div className="fg"><label>Amount ($)</label><input type="number" step="0.01" value={editPaymentForm.amount} onChange={e => setEditPaymentForm(p => ({ ...p, amount: e.target.value }))} autoFocus /></div><div className="fg"><label>Date</label><input type="date" value={editPaymentForm.date} onChange={e => setEditPaymentForm(p => ({ ...p, date: e.target.value }))} /></div></div><div className="fg" style={{ marginBottom: 12 }}><label>Method</label><select value={editPaymentForm.method} onChange={e => setEditPaymentForm(p => ({ ...p, method: e.target.value }))}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div><div className="fg" style={{ marginBottom: 16 }}><label>Note</label><input value={editPaymentForm.note} onChange={e => setEditPaymentForm(p => ({ ...p, note: e.target.value }))} placeholder="Optional" /></div><div style={{ display: "flex", gap: 8 }}><button className="btn bp" onClick={saveEditedPayment} disabled={saving}>{saving ? "Saving..." : "Save Changes"}</button><button className="btn bg" onClick={() => setEditPaymentModal(null)}>Cancel</button></div></div></div>; })()}
+      {editPaymentModal && (() => { const enroll = enrollments.find(e => e.id === editPaymentModal.enrollmentId); const person = enroll ? persons.find(p => p.id === enroll.personId) : null; if (!enroll || !person) return null; return <div className="mbg" onClick={() => setEditPaymentModal(null)}><div className="modal fade" onClick={e => e.stopPropagation()}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}><h2 style={{ fontSize: 19, fontWeight: 700 }}>Edit Payment</h2><button className="btn" onClick={() => setEditPaymentModal(null)} style={{ fontSize: 20, color: "#bbb", padding: "0 6px" }}>x</button></div><div style={{ background: "#f8f6f1", borderRadius: 10, padding: 10, marginBottom: 14, fontSize: 13 }}><span className="sn" style={{ marginRight: 7 }}>{person.studentNum}</span><strong>{`${person.firstName} ${person.lastName}`}</strong></div><div className="r2" style={{ marginBottom: 12 }}><div className="fg"><label>Amount ($)</label><MoneyInput value={editPaymentForm.amount} onChange={v => setEditPaymentForm(p => ({ ...p, amount: v }))} autoFocus /></div><div className="fg"><label>Date</label><input type="date" value={editPaymentForm.date} onChange={e => setEditPaymentForm(p => ({ ...p, date: e.target.value }))} /></div></div><div className="fg" style={{ marginBottom: 12 }}><label>Method</label><select value={editPaymentForm.method} onChange={e => setEditPaymentForm(p => ({ ...p, method: e.target.value }))}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div><div className="fg" style={{ marginBottom: 16 }}><label>Note</label><input value={editPaymentForm.note} onChange={e => setEditPaymentForm(p => ({ ...p, note: e.target.value }))} placeholder="Optional" /></div><div style={{ display: "flex", gap: 8 }}><button className="btn bp" onClick={saveEditedPayment} disabled={saving}>{saving ? "Saving..." : "Save Changes"}</button><button className="btn bg" onClick={() => setEditPaymentModal(null)}>Cancel</button></div></div></div>; })()}
 
       {receiptModal && <ReceiptView person={receiptModal.person} enrollment={receiptModal.enrollment} payment={receiptModal.payment} receiptNum={receiptModal.receiptNum} semesterLabel={semesterLabel} onClose={() => setReceiptModal(null)} />}
     </div>
