@@ -102,14 +102,25 @@ const NAV_ITEMS = [
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function getJuniorBaseRate(n) { if (n === 1) return 210; if (n === 2) return 190; if (n === 3) return 170; return 150; }
 function calcFamilyBilling(family, persons, enrollments, semMonths) {
-  const months = semMonths || SEMESTER_MONTHS_DEFAULT;
   const memberIds = family.personIds || [];
   const active = enrollments.filter(e => memberIds.includes(e.personId) && e.active);
   const juniors = active.filter(e => e.program === "juniors");
   const juniorRate = getJuniorBaseRate(juniors.length);
   const lineItems = [];
-  juniors.forEach(e => { const p = persons.find(x => x.id === e.personId); lineItems.push({ enrollmentId: e.id, personId: e.personId, name: p ? `${p.firstName} ${p.lastName}` : "-", program: "juniors", discounted: juniorRate }); });
-  const totalOwed = lineItems.reduce((a, l) => a + l.discounted, 0);
+  juniors.forEach(e => {
+    const p = persons.find(x => x.id === e.personId);
+    const effectiveTotal = e.paymentType === "discounted"
+      ? Math.round((e.discountedAmount || e.semesterTotal || 0) * 100) / 100
+      : juniorRate;
+    lineItems.push({
+      enrollmentId: e.id,
+      personId: e.personId,
+      name: p ? `${p.firstName} ${p.lastName}` : "-",
+      program: "juniors",
+      total: effectiveTotal,
+    });
+  });
+  const totalOwed = lineItems.reduce((a, l) => a + l.total, 0);
   const totalPaid = active.reduce((a, e) => (e.paymentType === "full" || e.paymentType === "waived") ? a + (e.semesterTotal || 0) : a + (e.amountPaid || 0), 0);
   return { lineItems, totalOwed, totalPaid, balance: Math.round((totalOwed - totalPaid) * 100) / 100 };
 }
@@ -448,11 +459,12 @@ export default function App() {
 
       const initPaid = Math.round((parseFloat(form.instalmentPaid) || 0) * 100) / 100;
       const discAmt = Math.round((parseFloat(form.discountedAmount) || 0) * 100) / 100;
-      const semTotal = isJunior ? getJuniorBaseRate(1) : (form.monthlyRate || 0) * semesterMonths;
-      const amountPaid = (form.paymentType === "full" || form.paymentType === "waived") ? semTotal : (form.paymentType === "instalment" || form.paymentType === "partial") ? initPaid : form.paymentType === "discounted" ? discAmt : 0;
+      const baseSemTotal = isJunior ? getJuniorBaseRate(1) : (form.monthlyRate || 0) * semesterMonths;
+      const semTotal = form.paymentType === "discounted" ? discAmt : baseSemTotal;
+      const amountPaid = (form.paymentType === "full" || form.paymentType === "waived" || form.paymentType === "discounted") ? semTotal : (form.paymentType === "instalment" || form.paymentType === "partial") ? initPaid : 0;
       const history = [];
       if (form.paymentType === "full") history.push({ id: uid(), date: form.paymentDate, amount: semTotal, method: form.paymentMethod, note: form.paymentNote || "Paid in Full", type: "full" });
-      else if (form.paymentType === "discounted" && discAmt > 0) history.push({ id: uid(), date: form.paymentDate, amount: discAmt, method: form.paymentMethod, note: form.paymentNote || "Discounted payment", type: "discounted" });
+      else if (form.paymentType === "discounted" && discAmt > 0) history.push({ id: uid(), date: form.paymentDate, amount: discAmt, method: form.paymentMethod, note: form.paymentNote || "Discounted total paid", type: "discounted" });
       else if ((form.paymentType === "instalment" || form.paymentType === "partial") && initPaid > 0) history.push({ id: uid(), date: form.instalmentDate, amount: initPaid, method: form.instalmentMethod, note: form.paymentNote || (form.paymentType === "partial" ? "Partial payment" : "Initial instalment"), type: form.paymentType });
       else if (form.paymentType === "waived") history.push({ id: uid(), date: form.paymentDate, amount: 0, method: "-", note: form.paymentNote || `Waived — ${form.waiverType}`, type: "waived" });
 
@@ -487,7 +499,17 @@ export default function App() {
     if (isNaN(newAmt) || newAmt < 0) { alert("Enter a valid amount."); return; }
     setSaving(true);
     let updatedEnroll = null;
-    const newEnrollments = enrollments.map(e => { if (e.id !== editPaymentModal.enrollmentId) return e; const newHistory = (e.paymentHistory || []).map(h => h.id !== editPaymentModal.paymentId ? h : { ...h, amount: newAmt, date: editPaymentForm.date, method: editPaymentForm.method, note: editPaymentForm.note }); const newAmountPaid = (e.paymentType === "full" || e.paymentType === "waived") ? e.semesterTotal : Math.round(newHistory.reduce((a, h) => a + (h.amount || 0), 0) * 100) / 100; updatedEnroll = { ...e, paymentHistory: newHistory, amountPaid: newAmountPaid }; return updatedEnroll; });
+    const newEnrollments = enrollments.map(e => {
+      if (e.id !== editPaymentModal.enrollmentId) return e;
+      const newHistory = (e.paymentHistory || []).map(h => h.id !== editPaymentModal.paymentId ? h : { ...h, amount: newAmt, date: editPaymentForm.date, method: editPaymentForm.method, note: editPaymentForm.note });
+      const discountedPayment = e.paymentType === "discounted" ? newHistory.find(h => h.type === "discounted") : null;
+      const newSemesterTotal = discountedPayment ? Math.round((discountedPayment.amount || 0) * 100) / 100 : e.semesterTotal;
+      const newAmountPaid = (e.paymentType === "full" || e.paymentType === "waived" || e.paymentType === "discounted")
+        ? newSemesterTotal
+        : Math.round(newHistory.reduce((a, h) => a + (h.amount || 0), 0) * 100) / 100;
+      updatedEnroll = { ...e, paymentHistory: newHistory, semesterTotal: newSemesterTotal, discountedAmount: discountedPayment ? newSemesterTotal : e.discountedAmount, amountPaid: newAmountPaid };
+      return updatedEnroll;
+    });
     try { if (updatedEnroll) { const { error } = await supabase.from("enrollments").upsert(mapEnrollmentToDb(updatedEnroll)); if (error) throw error; } setEnrollments(newEnrollments); } catch (err) { alert("Error saving: " + (err.message || JSON.stringify(err))); }
     setEditPaymentModal(null); setSaving(false);
   }
@@ -856,7 +878,7 @@ export default function App() {
                       {billing.lineItems.map((li, i) => (
                         <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "5px 0", borderBottom: "1px solid #eee" }}>
                           <span>{li.name}</span>
-                          <strong>{`$${li.discounted.toFixed(2)}`}</strong>
+                          <strong>{`$${li.total.toFixed(2)}`}</strong>
                         </div>
                       ))}
                       {billing.lineItems.length > 1 && <div style={{ fontSize: 11, color: "#aaa", marginTop: 4 }}>{`Family discount applied — ${billing.lineItems.length} children`}</div>}
