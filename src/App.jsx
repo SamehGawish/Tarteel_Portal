@@ -121,10 +121,18 @@ function calcFamilyBilling(family, persons, enrollments, semMonths) {
     });
   });
   const totalOwed = lineItems.reduce((a, l) => a + l.total, 0);
-  const totalPaid = active.reduce((a, e) => (e.paymentType === "full" || e.paymentType === "waived") ? a + (e.semesterTotal || 0) : a + (e.amountPaid || 0), 0);
+  const totalPaid = active.reduce((a, e) => isEnrollmentEffectivelyPaid(e) ? a + (e.semesterTotal || 0) : a + (e.amountPaid || 0), 0);
   return { lineItems, totalOwed, totalPaid, balance: Math.round((totalOwed - totalPaid) * 100) / 100 };
 }
-function enrollBalance(e) { return Math.max(0, (e.semesterTotal || 0) - (e.amountPaid || 0)); }
+function isEnrollmentEffectivelyPaid(e) {
+  if (!e) return false;
+  if (e.paymentType === "full" || e.paymentType === "waived" || e.paymentType === "discounted") return true;
+  if (e.paymentType === "instalment") {
+    return (e.paymentHistory || []).some(h => h.type === "instalment" && h.method === "IRM Online");
+  }
+  return false;
+}
+function enrollBalance(e) { return isEnrollmentEffectivelyPaid(e) ? 0 : Math.max(0, (e.semesterTotal || 0) - (e.amountPaid || 0)); }
 function cleanPhone(v) { return (v || "").replace(/\D/g, "").slice(0, 10); }
 function validEmail(v) { return !v || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v); }
 function fmtPhone(v) { const d = (v || "").replace(/\D/g, ""); if (d.length < 4) return d; if (d.length < 7) return `(${d.slice(0, 3)}) ${d.slice(3)}`; return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6, 10)}`; }
@@ -365,6 +373,8 @@ export default function App() {
   const isMinor = age > 0 && age < 18;
   const isAdult = age >= 18;
   const isJunior = form.program === "juniors";
+  const editingEnrollment = form.editingEnrollId ? enrollments.find(e => e.id === form.editingEnrollId) : null;
+  const editingPaymentCount = editingEnrollment ? (editingEnrollment.paymentHistory || []).length : 0;
   const currentAdultTeachers = adultTeachers[form.program] || [];
   const eligibleTeachers = isJunior && form.level !== "" ? juniorTeachers.filter(t => t.levels.includes(parseInt(form.level))) : isJunior ? [] : currentAdultTeachers;
 
@@ -393,7 +403,8 @@ export default function App() {
   function handleLookup(q) { setLookupQuery(q); if (!q.trim()) { setLookupResults([]); return; } const ql = q.toLowerCase().replace(/[\s\-(). ]/g, ""); setLookupResults(persons.filter(p => { const fields = [p.phone, p.email, p.parent1Phone, p.parent1Email, p.parent2Phone, p.parent2Email, p.firstName + p.lastName, p.parent1First + p.parent1Last, p.parent2First + p.parent2Last].map(x => (x || "").toLowerCase().replace(/[\s\-(). ]/g, "")); return fields.some(fd => fd.includes(ql)); })); }
   function openEditEnrollment(enrollment) {
     const person = persons.find(p => p.id === enrollment.personId); if (!person) return;
-    setForm({ ...INIT_FORM, mode: "existing", editingEnrollId: enrollment.id, linkedPersonId: person.id, firstName: person.firstName, lastName: person.lastName, age: String(person.age), gender: person.gender || "", phone: person.phone || "", email: person.email || "", address: person.address || { street: "", city: "", province: "", postal: "" }, notes: person.notes || "", parent1First: person.parent1First || "", parent1Last: person.parent1Last || "", parent1Phone: person.parent1Phone || "", parent1Email: person.parent1Email || "", parent2First: person.parent2First || "", parent2Last: person.parent2Last || "", parent2Phone: person.parent2Phone || "", parent2Email: person.parent2Email || "", twoParents: person.twoParents || "yes", mainContact: person.mainContact || "parent1", emergencyFirst: person.emergencyFirst || "", emergencyLast: person.emergencyLast || "", emergencyPhone: person.emergencyPhone || "", emergencyRelationship: person.emergencyRelationship || "", hasAllergy: person.hasAllergy === true ? "yes" : person.hasAllergy === false ? "no" : "", allergyNote: person.allergyNote || "", photo: person.photo || null, program: enrollment.program, level: String(enrollment.level != null ? enrollment.level : ""), levelName: enrollment.levelName || "", teacherId: enrollment.teacherId, teacherName: enrollment.teacherName, monthlyRate: enrollment.monthlyRate || 0, paymentType: enrollment.paymentType, paymentMethod: enrollment.paymentMethod || "Cash", waiverType: enrollment.waiverType || "Scholarship", discountedAmount: enrollment.discountedAmount ? String(enrollment.discountedAmount) : "" });
+    const firstPayment = (enrollment.paymentHistory || [])[0];
+    setForm({ ...INIT_FORM, mode: "existing", editingEnrollId: enrollment.id, linkedPersonId: person.id, firstName: person.firstName, lastName: person.lastName, age: String(person.age), gender: person.gender || "", phone: person.phone || "", email: person.email || "", address: person.address || { street: "", city: "", province: "", postal: "" }, notes: person.notes || "", parent1First: person.parent1First || "", parent1Last: person.parent1Last || "", parent1Phone: person.parent1Phone || "", parent1Email: person.parent1Email || "", parent2First: person.parent2First || "", parent2Last: person.parent2Last || "", parent2Phone: person.parent2Phone || "", parent2Email: person.parent2Email || "", twoParents: person.twoParents || "yes", mainContact: person.mainContact || "parent1", emergencyFirst: person.emergencyFirst || "", emergencyLast: person.emergencyLast || "", emergencyPhone: person.emergencyPhone || "", emergencyRelationship: person.emergencyRelationship || "", hasAllergy: person.hasAllergy === true ? "yes" : person.hasAllergy === false ? "no" : "", allergyNote: person.allergyNote || "", photo: person.photo || null, program: enrollment.program, level: String(enrollment.level != null ? enrollment.level : ""), levelName: enrollment.levelName || "", teacherId: enrollment.teacherId, teacherName: enrollment.teacherName, monthlyRate: enrollment.monthlyRate || 0, paymentType: enrollment.paymentType, paymentMethod: enrollment.paymentMethod || firstPayment?.method || "Cash", waiverType: enrollment.waiverType || "Scholarship", discountedAmount: enrollment.discountedAmount ? String(enrollment.discountedAmount) : "", instalmentMethod: firstPayment?.method || "Cash" });
     setView("enroll");
   }
   function startCamera() { navigator.mediaDevices.getUserMedia({ video: true }).then(s => { streamRef.current = s; if (videoRef.current) videoRef.current.srcObject = s; setCameraActive(true); }).catch(() => alert("Camera unavailable.")); }
@@ -449,7 +460,16 @@ export default function App() {
       if (form.editingEnrollId) {
         const updatedEnroll = enrollments.find(e => e.id === form.editingEnrollId);
         if (updatedEnroll) {
-          const newE = { ...updatedEnroll, teacherId: form.teacherId, teacherName: form.teacherName, level: form.level, levelName: form.levelName, monthlyRate: form.monthlyRate || 0 };
+          let paymentHistory = updatedEnroll.paymentHistory || [];
+          let paymentMethod = updatedEnroll.paymentMethod;
+          if (updatedEnroll.paymentType === "full" || updatedEnroll.paymentType === "discounted") {
+            paymentMethod = form.paymentMethod;
+            paymentHistory = paymentHistory.map((h, i) => i === 0 ? { ...h, method: form.paymentMethod } : h);
+          } else if ((updatedEnroll.paymentType === "instalment" || updatedEnroll.paymentType === "partial") && paymentHistory.length <= 1) {
+            paymentMethod = form.instalmentMethod;
+            paymentHistory = paymentHistory.map((h, i) => i === 0 ? { ...h, method: form.instalmentMethod } : h);
+          }
+          const newE = { ...updatedEnroll, teacherId: form.teacherId, teacherName: form.teacherName, level: form.level, levelName: form.levelName, monthlyRate: form.monthlyRate || 0, paymentMethod, paymentHistory };
           const { error: eErr } = await supabase.from("enrollments").upsert(mapEnrollmentToDb(newE));
           if (eErr) throw eErr;
           setEnrollments(prev => prev.map(e => e.id === form.editingEnrollId ? newE : e));
@@ -461,14 +481,16 @@ export default function App() {
       const discAmt = Math.round((parseFloat(form.discountedAmount) || 0) * 100) / 100;
       const baseSemTotal = isJunior ? getJuniorBaseRate(1) : (form.monthlyRate || 0) * semesterMonths;
       const semTotal = form.paymentType === "discounted" ? discAmt : baseSemTotal;
+      const isIrmInstallment = form.paymentType === "instalment" && form.instalmentMethod === "IRM Online";
       const amountPaid = (form.paymentType === "full" || form.paymentType === "waived" || form.paymentType === "discounted") ? semTotal : (form.paymentType === "instalment" || form.paymentType === "partial") ? initPaid : 0;
+      const effectiveAmountPaid = isIrmInstallment ? semTotal : amountPaid;
       const history = [];
       if (form.paymentType === "full") history.push({ id: uid(), date: form.paymentDate, amount: semTotal, method: form.paymentMethod, note: form.paymentNote || "Paid in Full", type: "full" });
       else if (form.paymentType === "discounted" && discAmt > 0) history.push({ id: uid(), date: form.paymentDate, amount: discAmt, method: form.paymentMethod, note: form.paymentNote || "Discounted total paid", type: "discounted" });
       else if ((form.paymentType === "instalment" || form.paymentType === "partial") && initPaid > 0) history.push({ id: uid(), date: form.instalmentDate, amount: initPaid, method: form.instalmentMethod, note: form.paymentNote || (form.paymentType === "partial" ? "Partial payment" : "Initial instalment"), type: form.paymentType });
       else if (form.paymentType === "waived") history.push({ id: uid(), date: form.paymentDate, amount: 0, method: "-", note: form.paymentNote || `Waived — ${form.waiverType}`, type: "waived" });
 
-      const enrollData = { id: uid(), personId, program: form.program, level: form.level, levelName: form.levelName, teacherId: form.teacherId, teacherName: form.teacherName, monthlyRate: form.monthlyRate || 0, semesterTotal: semTotal, amountPaid, paymentType: form.paymentType, paymentMethod: form.paymentMethod, waiverType: form.waiverType, discountedAmount: discAmt, paymentHistory: history, active: true, semesterLabel };
+      const enrollData = { id: uid(), personId, program: form.program, level: form.level, levelName: form.levelName, teacherId: form.teacherId, teacherName: form.teacherName, monthlyRate: form.monthlyRate || 0, semesterTotal: semTotal, amountPaid: effectiveAmountPaid, paymentType: form.paymentType, paymentMethod: form.paymentMethod, waiverType: form.waiverType, discountedAmount: discAmt, paymentHistory: history, active: true, semesterLabel };
       const { error: enrollErr } = await supabase.from("enrollments").upsert(mapEnrollmentToDb(enrollData));
       if (enrollErr) throw enrollErr;
       setEnrollments(prev => [...prev, enrollData]);
@@ -485,7 +507,15 @@ export default function App() {
     setSaving(true);
     const entry = { id: uid(), date: instalment.date, amount: amt, method: instalment.method, note: instalment.note, type: "instalment" };
     let updatedEnroll = null;
-    const newEnrollments = enrollments.map(e => { if (e.id !== paymentModal.enrollmentId) return e; const rawPaid = customBal !== "" ? (e.semesterTotal - parseFloat(customBal)) : (e.amountPaid || 0) + amt; updatedEnroll = { ...e, amountPaid: Math.round(rawPaid * 100) / 100, paymentHistory: [...(e.paymentHistory || []), entry] }; return updatedEnroll; });
+    const newEnrollments = enrollments.map(e => {
+      if (e.id !== paymentModal.enrollmentId) return e;
+      const irmInstallmentPaid = e.paymentType === "instalment" && instalment.method === "IRM Online";
+      const rawPaid = irmInstallmentPaid
+        ? (e.semesterTotal || 0)
+        : customBal !== "" ? (e.semesterTotal - parseFloat(customBal)) : (e.amountPaid || 0) + amt;
+      updatedEnroll = { ...e, amountPaid: Math.round(rawPaid * 100) / 100, paymentHistory: [...(e.paymentHistory || []), entry] };
+      return updatedEnroll;
+    });
     try {
       if (updatedEnroll) { const { error } = await supabase.from("enrollments").upsert(mapEnrollmentToDb(updatedEnroll)); if (error) throw error; setEnrollments(newEnrollments); const person = persons.find(p => p.id === updatedEnroll.personId); setReceiptModal({ person, enrollment: updatedEnroll, payment: entry, receiptNum: nextReceiptNum(person) }); }
     } catch (err) { alert("Error saving payment: " + (err.message || JSON.stringify(err))); }
@@ -504,7 +534,8 @@ export default function App() {
       const newHistory = (e.paymentHistory || []).map(h => h.id !== editPaymentModal.paymentId ? h : { ...h, amount: newAmt, date: editPaymentForm.date, method: editPaymentForm.method, note: editPaymentForm.note });
       const discountedPayment = e.paymentType === "discounted" ? newHistory.find(h => h.type === "discounted") : null;
       const newSemesterTotal = discountedPayment ? Math.round((discountedPayment.amount || 0) * 100) / 100 : e.semesterTotal;
-      const newAmountPaid = (e.paymentType === "full" || e.paymentType === "waived" || e.paymentType === "discounted")
+      const irmInstallmentPaid = e.paymentType === "instalment" && newHistory.some(h => h.type === "instalment" && h.method === "IRM Online");
+      const newAmountPaid = (e.paymentType === "full" || e.paymentType === "waived" || e.paymentType === "discounted" || irmInstallmentPaid)
         ? newSemesterTotal
         : Math.round(newHistory.reduce((a, h) => a + (h.amount || 0), 0) * 100) / 100;
       updatedEnroll = { ...e, paymentHistory: newHistory, semesterTotal: newSemesterTotal, discountedAmount: discountedPayment ? newSemesterTotal : e.discountedAmount, amountPaid: newAmountPaid };
@@ -827,16 +858,28 @@ export default function App() {
           {form.teacherId && !isJunior && form.monthlyRate > 0 && <div style={{ marginTop: 8, padding: "8px 12px", background: "#f0faf4", borderRadius: 8, fontSize: 13 }}>{`Monthly: $${form.monthlyRate} — Semester (${semesterMonths} mo): $${form.monthlyRate * semesterMonths}`}</div>}
         </div>
 
-        {!form.editingEnrollId && (
-          <div className="card" style={{ marginBottom: 22 }}>
-            <div className="sec">Payment</div>
-            <div className="r2" style={{ marginBottom: 12 }}><div className="fg"><label>Type *</label><select value={form.paymentType} onChange={e => f("paymentType", e.target.value)}><option value="full">Paid in Full</option><option value="partial">Partially Paid</option><option value="instalment">Instalments</option><option value="discounted">Discounted</option><option value="waived">Waived</option></select></div>{(form.paymentType === "full" || form.paymentType === "discounted") && <div className="fg"><label>Date</label><input type="date" value={form.paymentDate} onChange={e => f("paymentDate", e.target.value)} /></div>}</div>
-            {form.paymentType === "full" && <div className="r2"><div className="fg"><label>Method</label><select value={form.paymentMethod} onChange={e => f("paymentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div><div className="fg"><label>Note</label><input value={form.paymentNote} onChange={e => f("paymentNote", e.target.value)} placeholder="Optional" /></div></div>}
-            {form.paymentType === "discounted" && <div><div className="r2" style={{ marginBottom: 10 }}><div className="fg"><label>Amount ($)</label><input type="number" value={form.discountedAmount} onChange={e => f("discountedAmount", e.target.value)} /></div><div className="fg"><label>Method</label><select value={form.paymentMethod} onChange={e => f("paymentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div></div></div>}
-            {(form.paymentType === "instalment" || form.paymentType === "partial") && <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 12 }}><div style={{ fontSize: 12, color: "#aaa", marginBottom: 8 }}>{form.paymentType === "partial" ? "Amount paid so far" : "Initial payment today"}</div><div className="r2" style={{ marginBottom: 8 }}><div className="fg"><label>Amount ($)</label><input type="number" value={form.instalmentPaid} onChange={e => f("instalmentPaid", e.target.value)} /></div><div className="fg"><label>Date</label><input type="date" value={form.instalmentDate} onChange={e => f("instalmentDate", e.target.value)} /></div></div><div className="fg"><label>Method</label><select value={form.instalmentMethod} onChange={e => f("instalmentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div></div>}
-            {form.paymentType === "waived" && <div className="fg"><label>Reason</label><select value={form.waiverType} onChange={e => f("waiverType", e.target.value)}>{WAIVER_TYPES.map(w => <option key={w}>{w}</option>)}</select></div>}
-          </div>
-        )}
+        <div className="card" style={{ marginBottom: 22 }}>
+          <div className="sec">Payment</div>
+          {!form.editingEnrollId ? (
+            <>
+              <div className="r2" style={{ marginBottom: 12 }}><div className="fg"><label>Type *</label><select value={form.paymentType} onChange={e => f("paymentType", e.target.value)}><option value="full">Paid in Full</option><option value="partial">Partially Paid</option><option value="instalment">Instalments</option><option value="discounted">Discounted</option><option value="waived">Waived</option></select></div>{(form.paymentType === "full" || form.paymentType === "discounted") && <div className="fg"><label>Date</label><input type="date" value={form.paymentDate} onChange={e => f("paymentDate", e.target.value)} /></div>}</div>
+              {form.paymentType === "full" && <div className="r2"><div className="fg"><label>Method</label><select value={form.paymentMethod} onChange={e => f("paymentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div><div className="fg"><label>Note</label><input value={form.paymentNote} onChange={e => f("paymentNote", e.target.value)} placeholder="Optional" /></div></div>}
+              {form.paymentType === "discounted" && <div><div className="r2" style={{ marginBottom: 10 }}><div className="fg"><label>Amount ($)</label><input type="number" value={form.discountedAmount} onChange={e => f("discountedAmount", e.target.value)} /></div><div className="fg"><label>Method</label><select value={form.paymentMethod} onChange={e => f("paymentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div></div></div>}
+              {(form.paymentType === "instalment" || form.paymentType === "partial") && <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 12 }}><div style={{ fontSize: 12, color: "#aaa", marginBottom: 8 }}>{form.paymentType === "partial" ? "Amount paid so far" : "Initial payment today"}</div><div className="r2" style={{ marginBottom: 8 }}><div className="fg"><label>Amount ($)</label><input type="number" value={form.instalmentPaid} onChange={e => f("instalmentPaid", e.target.value)} /></div><div className="fg"><label>Date</label><input type="date" value={form.instalmentDate} onChange={e => f("instalmentDate", e.target.value)} /></div></div><div className="fg"><label>Method</label><select value={form.instalmentMethod} onChange={e => f("instalmentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div></div>}
+              {form.paymentType === "waived" && <div className="fg"><label>Reason</label><select value={form.waiverType} onChange={e => f("waiverType", e.target.value)}>{WAIVER_TYPES.map(w => <option key={w}>{w}</option>)}</select></div>}
+            </>
+          ) : (
+            <>
+              <div style={{ background: "#f8f6f1", borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>
+                <strong>Payment Type:</strong> {ptypeLabel(form.paymentType)}
+              </div>
+              {(form.paymentType === "full" || form.paymentType === "discounted") && <div className="fg"><label>Payment Method</label><select value={form.paymentMethod} onChange={e => f("paymentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>}
+              {(form.paymentType === "instalment" || form.paymentType === "partial") && editingPaymentCount <= 1 && <div className="fg"><label>{editingPaymentCount === 0 ? "Payment Method" : "Initial Payment Method"}</label><select value={form.instalmentMethod} onChange={e => f("instalmentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>}
+              {(form.paymentType === "instalment" || form.paymentType === "partial") && editingPaymentCount > 1 && <div style={{ background: "#f8f6f1", borderRadius: 10, padding: 12, fontSize: 13, color: "#777" }}>This enrollment has multiple payment entries. Use the Families page payment editor to change individual payment methods.</div>}
+              {form.paymentType === "waived" && <div style={{ background: "#f8f6f1", borderRadius: 10, padding: 12, fontSize: 13 }}><strong>Reason:</strong> {form.waiverType || "-"}</div>}
+            </>
+          )}
+        </div>
         <div style={{ display: "flex", gap: 10 }}>
           <button className="btn bp" onClick={submitEnrollment} disabled={saving}>{saving ? "Saving..." : form.editingEnrollId ? "Save Changes" : "Enroll Student"}</button>
           <button className="btn bg" onClick={() => { setForm(INIT_FORM); setView("dashboard"); }}>Cancel</button>
