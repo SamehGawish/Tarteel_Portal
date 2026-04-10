@@ -512,7 +512,7 @@ export default function App() {
     if (form.program === "brothers" && form.gender !== "Male") return "Tarteel Brothers is for male students only.";
     if (form.program === "sisters" && form.gender !== "Female") return "Tarteel Sisters is for female students only.";
     if ((form.program === "brothers" || form.program === "sisters") && parseInt(form.age) < 18) return "Brothers and Sisters programs are for adults (18+).";
-    if (form.program === "juniors") { const a = parseInt(form.age); if (a < 6) return "Juniors must be at least 6 years old."; if (a > 18) return "Juniors must be 18 or younger."; }
+    if (form.program === "juniors") { const a = parseInt(form.age); if (a < 6) return "Juniors must be at least 6 years old."; }
     if (form.hasAllergy === "") return "Please answer the medical/allergy question.";
     if (isAdult) { if (!form.phone) return "Phone is required for adult students."; if (form.phone.length < 10) return "Phone must be 10 digits."; if (!form.email) return "Email is required."; if (!validEmail(form.email)) return "Please enter a valid email."; }
     if (isMinor) { if (!form.parent1First || !form.parent1Last) return "Parent 1 name is required."; if (!form.parent1Phone && !form.parent1Email) return "Parent 1 phone or email is required."; if (form.parent1Phone && form.parent1Phone.length < 10) return "Parent 1 phone must be 10 digits."; if (form.twoParents === "no" && (!form.emergencyFirst || !form.emergencyLast)) return "Emergency contact name required."; }
@@ -993,7 +993,7 @@ export default function App() {
           <div className="sec">Student Information</div>
           <div className="r2" style={{ marginBottom: 12 }}><div className="fg"><label>First Name *</label><input value={form.firstName} onChange={e => f("firstName", e.target.value)} placeholder="e.g. Ahmed" /></div><div className="fg"><label>Last Name *</label><input value={form.lastName} onChange={e => f("lastName", e.target.value)} placeholder="e.g. Al-Hassan" /></div></div>
           <div className="r2" style={{ marginBottom: 12 }}>
-            <div className="fg"><label>Age *</label><input type="number" min={form.program === "juniors" ? 6 : 18} max={form.program === "juniors" ? 18 : 99} value={form.age} onChange={e => f("age", e.target.value)} placeholder={form.program === "juniors" ? "Age 6-18" : "Age 18+"} /></div>
+            <div className="fg"><label>Age *</label><input type="number" min={form.program === "juniors" ? 6 : 18} max={99} value={form.age} onChange={e => f("age", e.target.value)} placeholder={form.program === "juniors" ? "Age 6+" : "Age 18+"} /></div>
             <div className="fg"><label>Gender *</label><div style={{ display: "flex", gap: 8, marginTop: 2 }}>{["Male", "Female"].map(g => { const blocked = (form.program === "brothers" && g === "Female") || (form.program === "sisters" && g === "Male"); return <div key={g} className={`ropt${form.gender === g ? " on" : ""}`} style={{ flex: 1, justifyContent: "center", opacity: blocked ? 0.3 : 1, cursor: blocked ? "not-allowed" : "pointer" }} onClick={() => { if (!blocked) f("gender", g); }}>{g}</div>; })}</div></div>
           </div>
           <div className="fg" style={{ marginBottom: 10 }}><label>Address (optional)</label><AddressInput value={form.address} onChange={addr => f("address", addr)} /></div>
