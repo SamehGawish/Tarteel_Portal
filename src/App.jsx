@@ -140,6 +140,33 @@ function readStoredNumber(key, fallback) {
     return fallback;
   }
 }
+function mapTeacherFromDb(t) {
+  return {
+    id: t.id,
+    name: t.name,
+    levels: Array.isArray(t.levels) ? t.levels.map(v => Number(v)) : [],
+    monthlyRate: Number(t.monthly_rate || 0),
+  };
+}
+function buildTeacherState(rows) {
+  return {
+    juniors: rows.filter(t => t.program === "juniors").map(mapTeacherFromDb),
+    adults: {
+      brothers: rows.filter(t => t.program === "brothers").map(mapTeacherFromDb),
+      sisters: rows.filter(t => t.program === "sisters").map(mapTeacherFromDb),
+    },
+  };
+}
+function buildAdultLevelsState(rows) {
+  const grouped = { brothers: [], sisters: [] };
+  rows
+    .slice()
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || String(a.label || "").localeCompare(String(b.label || "")))
+    .forEach(row => {
+      if (row.program === "brothers" || row.program === "sisters") grouped[row.program].push(row.label);
+    });
+  return grouped;
+}
 function calcFamilyBilling(family, persons, enrollments, semMonths) {
   const memberIds = family.personIds || [];
   const active = enrollments.filter(e => memberIds.includes(e.personId) && e.active);
@@ -407,6 +434,22 @@ export default function App() {
         setEnrollments((e || []).map(mapEnrollmentFromDb));
         const nums = (p || []).map(x => parseInt((x.student_num || "").replace("T-", ""))).filter(n => !isNaN(n));
         if (nums.length) studentCounter = Math.max(...nums);
+        const [{ data: teacherRows, error: teacherErr }, { data: levelRows, error: levelErr }] = await Promise.all([
+          supabase.from("teachers").select("*").order("created_at", { ascending: true }),
+          supabase.from("program_levels").select("*").order("position", { ascending: true }),
+        ]);
+        if (!teacherErr) {
+          const teacherState = buildTeacherState(teacherRows || []);
+          setJuniorTeachers(teacherState.juniors);
+          setAdultTeachers(teacherState.adults);
+        } else {
+          console.warn("Could not load teachers from Supabase.", teacherErr);
+        }
+        if (!levelErr) {
+          setAdultLevels(buildAdultLevelsState(levelRows || []));
+        } else {
+          console.warn("Could not load program levels from Supabase.", levelErr);
+        }
       } catch (err) {
         setDbError("Could not connect to database. Check your Supabase credentials.");
       }
@@ -643,15 +686,91 @@ export default function App() {
 
   function issueReceiptFor(enrollment, payment) { const person = persons.find(p => p.id === enrollment.personId); setReceiptModal({ person, enrollment, payment, receiptNum: nextReceiptNum(person) }); }
 
-  function saveTeacher() {
+  async function persistAdultLevels(program, nextLevels) {
+    const { error: deleteErr } = await supabase.from("program_levels").delete().eq("program", program);
+    if (deleteErr) throw deleteErr;
+    if (!nextLevels.length) return;
+    const rows = nextLevels.map((label, index) => ({ program, label, position: index }));
+    const { error: insertErr } = await supabase.from("program_levels").insert(rows);
+    if (insertErr) throw insertErr;
+  }
+
+  async function saveTeacher() {
     if (!teacherForm.name.trim()) { setTeacherMsg("Name required."); return; }
     if (teacherForm.program === "juniors" && !teacherForm.levels.length) { setTeacherMsg("Assign at least one level."); return; }
     if (teacherForm.program !== "juniors" && !teacherForm.monthlyRate) { setTeacherMsg("Monthly rate required."); return; }
+    setSaving(true);
     const t = { id: editingTeacherId || uid(), name: teacherForm.name, levels: teacherForm.levels, monthlyRate: parseFloat(teacherForm.monthlyRate) || 0 };
-    if (teacherForm.program === "juniors") setJuniorTeachers(p => editingTeacherId ? p.map(x => x.id === editingTeacherId ? t : x) : [...p, t]);
-    else setAdultTeachers(p => ({ ...p, [teacherForm.program]: editingTeacherId ? (p[teacherForm.program] || []).map(x => x.id === editingTeacherId ? t : x) : [...(p[teacherForm.program] || []), t] }));
-    setTeacherMsg(editingTeacherId ? "Updated" : "Added"); setTeacherForm({ program: "juniors", name: "", levels: [], monthlyRate: "" }); setEditingTeacherId(null);
+    try {
+      const row = {
+        id: t.id,
+        program: teacherForm.program,
+        name: t.name,
+        levels: teacherForm.program === "juniors" ? t.levels : [],
+        monthly_rate: teacherForm.program === "juniors" ? null : t.monthlyRate,
+      };
+      const { error } = await supabase.from("teachers").upsert(row);
+      if (error) throw error;
+      if (teacherForm.program === "juniors") setJuniorTeachers(p => editingTeacherId ? p.map(x => x.id === editingTeacherId ? t : x) : [...p, t]);
+      else setAdultTeachers(p => ({ ...p, [teacherForm.program]: editingTeacherId ? (p[teacherForm.program] || []).map(x => x.id === editingTeacherId ? t : x) : [...(p[teacherForm.program] || []), t] }));
+      setTeacherMsg(editingTeacherId ? "Updated" : "Added");
+      setTeacherForm({ program: "juniors", name: "", levels: [], monthlyRate: "" });
+      setEditingTeacherId(null);
+    } catch (err) {
+      setTeacherMsg("Could not save teacher. Check Supabase tables/policies.");
+    }
+    setSaving(false);
     setTimeout(() => setTeacherMsg(""), 2500);
+  }
+
+  async function deleteTeacher(program, teacherId) {
+    if (!window.confirm("Remove?")) return;
+    setSaving(true);
+    try {
+      const { error } = await supabase.from("teachers").delete().eq("id", teacherId);
+      if (error) throw error;
+      if (program === "juniors") setJuniorTeachers(p => p.filter(x => x.id !== teacherId));
+      else setAdultTeachers(p => ({ ...p, [program]: p[program].filter(x => x.id !== teacherId) }));
+    } catch (err) {
+      setTeacherMsg("Could not delete teacher. Check Supabase tables/policies.");
+      setTimeout(() => setTeacherMsg(""), 2500);
+    }
+    setSaving(false);
+  }
+
+  async function addAdultLevel(program) {
+    const label = (newLevelInput[program] || "").trim();
+    if (!label) return;
+    const current = adultLevels[program] || [];
+    if (current.includes(label)) {
+      setTeacherMsg("Level already exists.");
+      setTimeout(() => setTeacherMsg(""), 2500);
+      return;
+    }
+    const nextLevels = [...current, label];
+    setSaving(true);
+    try {
+      await persistAdultLevels(program, nextLevels);
+      setAdultLevels(p => ({ ...p, [program]: nextLevels }));
+      setNewLevelInput(p => ({ ...p, [program]: "" }));
+    } catch (err) {
+      setTeacherMsg("Could not save levels. Check Supabase tables/policies.");
+      setTimeout(() => setTeacherMsg(""), 2500);
+    }
+    setSaving(false);
+  }
+
+  async function deleteAdultLevel(program, label) {
+    const nextLevels = (adultLevels[program] || []).filter(l => l !== label);
+    setSaving(true);
+    try {
+      await persistAdultLevels(program, nextLevels);
+      setAdultLevels(p => ({ ...p, [program]: nextLevels }));
+    } catch (err) {
+      setTeacherMsg("Could not delete level. Check Supabase tables/policies.");
+      setTimeout(() => setTeacherMsg(""), 2500);
+    }
+    setSaving(false);
   }
 
   const progEnrollments = prog => enrollments.filter(e => e.program === prog && e.active);
@@ -1059,8 +1178,8 @@ export default function App() {
         <p style={{ color: "#aaa", fontSize: 13, marginBottom: 16 }}>Manage teachers and levels</p>
         <div style={{ display: isMobile ? "block" : "grid", gridTemplateColumns: "1fr 300px", gap: 18 }}>
           <div>
-            {["brothers", "sisters"].map(prog => <div key={prog} className="card" style={{ marginBottom: 14, borderTop: `3px solid ${prog === "brothers" ? "var(--bro)" : "var(--sis)"}` }}><div className="sec">{`${PROGRAMS[prog]} — Levels`}</div><div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }}>{(adultLevels[prog] || []).map((l, i) => <span key={i} className="lt">{l}<button onClick={() => setAdultLevels(p => ({ ...p, [prog]: p[prog].filter((_, j) => j !== i) }))}>x</button></span>)}{!(adultLevels[prog] && adultLevels[prog].length) && <span style={{ fontSize: 12, color: "#bbb" }}>No levels yet</span>}</div><div style={{ display: "flex", gap: 7 }}><input value={newLevelInput[prog] || ""} onChange={e => setNewLevelInput(p => ({ ...p, [prog]: e.target.value }))} onKeyDown={e => { if (e.key === "Enter") { const v = (newLevelInput[prog] || "").trim(); if (v) { setAdultLevels(p => ({ ...p, [prog]: [...(p[prog] || []), v] })); setNewLevelInput(p => ({ ...p, [prog]: "" })); } } }} placeholder="New level name..." style={{ flex: 1, padding: "8px 12px", border: "1.5px solid #ddd", borderRadius: 8, fontSize: 14, fontFamily: "inherit" }} /><button className="btn bp bsm" onClick={() => { const v = (newLevelInput[prog] || "").trim(); if (v) { setAdultLevels(p => ({ ...p, [prog]: [...(p[prog] || []), v] })); setNewLevelInput(p => ({ ...p, [prog]: "" })); } }}>+ Add</button></div></div>)}
-            {[{ prog: "juniors", tList: juniorTeachers, color: "var(--g)" }, { prog: "brothers", tList: adultTeachers.brothers || [], color: "var(--bro)" }, { prog: "sisters", tList: adultTeachers.sisters || [], color: "var(--sis)" }].map(item => <div key={item.prog} className="card" style={{ marginBottom: 12, borderTop: `3px solid ${item.color}` }}><div className="sec">{`${PROGRAMS[item.prog]} — Teachers`}</div>{!item.tList.length ? <div style={{ color: "#ccc", fontSize: 13 }}>No teachers yet.</div> : <div style={{ overflowX: "auto" }}><table className="tbl" style={{ minWidth: 320 }}><thead><tr><th>Name</th><th>{item.prog === "juniors" ? "Levels" : "Rate"}</th><th>Students</th><th></th></tr></thead><tbody>{item.tList.map(t => { const cnt = enrollments.filter(e => e.teacherId === t.id && e.active).length; return <tr key={t.id}><td style={{ fontWeight: 600 }}>{t.name}</td><td>{item.prog === "juniors" ? <div style={{ display: "flex", gap: 3 }}>{(t.levels || []).sort((a, b) => a - b).map(li => <span key={li} className="bgg" style={{ fontSize: 10 }}>{JUNIOR_LEVELS[li]}</span>)}</div> : <span className="bgry">{`$${t.monthlyRate}/mo`}</span>}</td><td><span className="bgry">{cnt}</span></td><td><div style={{ display: "flex", gap: 4 }}><button className="btn bg bsm" onClick={() => { setTeacherForm({ program: item.prog, name: t.name, levels: t.levels || [], monthlyRate: t.monthlyRate || "" }); setEditingTeacherId(t.id); }}>Edit</button><button className="btn bd bsm" onClick={() => { if (!window.confirm("Remove?")) return; if (item.prog === "juniors") setJuniorTeachers(p => p.filter(x => x.id !== t.id)); else setAdultTeachers(p => ({ ...p, [item.prog]: p[item.prog].filter(x => x.id !== t.id) })); }}>X</button></div></td></tr>; })}</tbody></table></div>}</div>)}
+            {["brothers", "sisters"].map(prog => <div key={prog} className="card" style={{ marginBottom: 14, borderTop: `3px solid ${prog === "brothers" ? "var(--bro)" : "var(--sis)"}` }}><div className="sec">{`${PROGRAMS[prog]} — Levels`}</div><div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }}>{(adultLevels[prog] || []).map((l, i) => <span key={i} className="lt">{l}<button onClick={() => deleteAdultLevel(prog, l)}>x</button></span>)}{!(adultLevels[prog] && adultLevels[prog].length) && <span style={{ fontSize: 12, color: "#bbb" }}>No levels yet</span>}</div><div style={{ display: "flex", gap: 7 }}><input value={newLevelInput[prog] || ""} onChange={e => setNewLevelInput(p => ({ ...p, [prog]: e.target.value }))} onKeyDown={e => { if (e.key === "Enter") addAdultLevel(prog); }} placeholder="New level name..." style={{ flex: 1, padding: "8px 12px", border: "1.5px solid #ddd", borderRadius: 8, fontSize: 14, fontFamily: "inherit" }} /><button className="btn bp bsm" onClick={() => addAdultLevel(prog)}>+ Add</button></div></div>)}
+            {[{ prog: "juniors", tList: juniorTeachers, color: "var(--g)" }, { prog: "brothers", tList: adultTeachers.brothers || [], color: "var(--bro)" }, { prog: "sisters", tList: adultTeachers.sisters || [], color: "var(--sis)" }].map(item => <div key={item.prog} className="card" style={{ marginBottom: 12, borderTop: `3px solid ${item.color}` }}><div className="sec">{`${PROGRAMS[item.prog]} — Teachers`}</div>{!item.tList.length ? <div style={{ color: "#ccc", fontSize: 13 }}>No teachers yet.</div> : <div style={{ overflowX: "auto" }}><table className="tbl" style={{ minWidth: 320 }}><thead><tr><th>Name</th><th>{item.prog === "juniors" ? "Levels" : "Rate"}</th><th>Students</th><th></th></tr></thead><tbody>{item.tList.map(t => { const cnt = enrollments.filter(e => e.teacherId === t.id && e.active).length; return <tr key={t.id}><td style={{ fontWeight: 600 }}>{t.name}</td><td>{item.prog === "juniors" ? <div style={{ display: "flex", gap: 3 }}>{(t.levels || []).sort((a, b) => a - b).map(li => <span key={li} className="bgg" style={{ fontSize: 10 }}>{JUNIOR_LEVELS[li]}</span>)}</div> : <span className="bgry">{`$${t.monthlyRate}/mo`}</span>}</td><td><span className="bgry">{cnt}</span></td><td><div style={{ display: "flex", gap: 4 }}><button className="btn bg bsm" onClick={() => { setTeacherForm({ program: item.prog, name: t.name, levels: t.levels || [], monthlyRate: t.monthlyRate || "" }); setEditingTeacherId(t.id); }}>Edit</button><button className="btn bd bsm" onClick={() => deleteTeacher(item.prog, t.id)}>X</button></div></td></tr>; })}</tbody></table></div>}</div>)}
           </div>
           <div className="card" style={{ position: isMobile ? "static" : "sticky", top: 20, marginTop: isMobile ? 14 : 0 }}>
             <div className="sec">{editingTeacherId ? "Edit Teacher" : "Add Teacher"}</div>
