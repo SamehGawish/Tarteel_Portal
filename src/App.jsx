@@ -416,6 +416,7 @@ export default function App() {
   const [lookupQuery, setLookupQuery] = useState("");
   const [lookupProgramFilter, setLookupProgramFilter] = useState("");
   const [lookupLevelFilter, setLookupLevelFilter] = useState("");
+  const [lookupGenderFilter, setLookupGenderFilter] = useState("");
   const [lookupResults, setLookupResults] = useState([]);
   const videoRef = useRef(null); const streamRef = useRef(null);
 
@@ -502,16 +503,17 @@ export default function App() {
     if (enrollment.program === "juniors") return `juniors:${enrollment.level}`;
     return `${enrollment.program}:${enrollment.levelName || ""}`;
   }
-  function runLookup(query, programFilter, levelFilter) {
+  function runLookup(query, programFilter, levelFilter, genderFilter) {
     const ql = (query || "").toLowerCase().replace(/[\s\-(). ]/g, "");
     const hasQuery = Boolean(ql);
-    const hasFilters = Boolean(programFilter || levelFilter);
+    const hasFilters = Boolean(programFilter || levelFilter || genderFilter);
     if (!hasQuery && !hasFilters) { setLookupResults([]); return; }
     setLookupResults(persons.filter(p => {
       const personEnrollments = enrollments.filter(e => e.personId === p.id && e.active);
       const matchesProgram = !programFilter || personEnrollments.some(e => e.program === programFilter);
       const matchesLevel = !levelFilter || personEnrollments.some(e => getEnrollmentLookupLevelValue(e) === levelFilter);
-      if (!matchesProgram || !matchesLevel) return false;
+      const matchesGender = !genderFilter || p.gender === genderFilter;
+      if (!matchesProgram || !matchesLevel || !matchesGender) return false;
       if (!hasQuery) return true;
       const fields = [p.phone, p.email, p.parent1Phone, p.parent1Email, p.parent2Phone, p.parent2Email, p.firstName + p.lastName, p.parent1First + p.parent1Last, p.parent2First + p.parent2Last].map(x => (x || "").toLowerCase().replace(/[\s\-(). ]/g, ""));
       return fields.some(fd => fd.includes(ql));
@@ -519,17 +521,21 @@ export default function App() {
   }
   function handleLookup(q) {
     setLookupQuery(q);
-    runLookup(q, lookupProgramFilter, lookupLevelFilter);
+    runLookup(q, lookupProgramFilter, lookupLevelFilter, lookupGenderFilter);
   }
   function handleLookupProgramFilter(program) {
     setLookupProgramFilter(program);
     const nextLevel = program === lookupProgramFilter ? lookupLevelFilter : "";
     if (program !== lookupProgramFilter) setLookupLevelFilter("");
-    runLookup(lookupQuery, program, nextLevel);
+    runLookup(lookupQuery, program, nextLevel, lookupGenderFilter);
   }
   function handleLookupLevelFilter(level) {
     setLookupLevelFilter(level);
-    runLookup(lookupQuery, lookupProgramFilter, level);
+    runLookup(lookupQuery, lookupProgramFilter, level, lookupGenderFilter);
+  }
+  function handleLookupGenderFilter(gender) {
+    setLookupGenderFilter(gender);
+    runLookup(lookupQuery, lookupProgramFilter, lookupLevelFilter, gender);
   }
   function openEditEnrollment(enrollment) {
     const person = persons.find(p => p.id === enrollment.personId); if (!person) return;
@@ -1189,7 +1195,8 @@ export default function App() {
             : lookupProgramFilter === "brothers" || lookupProgramFilter === "sisters"
               ? (adultLevels[lookupProgramFilter] || []).map(label => ({ value: `${lookupProgramFilter}:${label}`, label }))
               : [];
-          const hasLookupInput = Boolean(lookupQuery || lookupProgramFilter || lookupLevelFilter);
+          const hasLookupInput = Boolean(lookupQuery || lookupProgramFilter || lookupLevelFilter || lookupGenderFilter);
+          const resultLabel = `${lookupResults.length} ${lookupResults.length === 1 ? "student" : "students"} found`;
           return (
             <>
               <div className="card" style={{ marginBottom: 14 }}>
@@ -1197,7 +1204,7 @@ export default function App() {
                   <label>Name, Phone, or Email</label>
                   <input value={lookupQuery} onChange={e => handleLookup(e.target.value)} placeholder="e.g. Ahmed or 6131234567" autoFocus style={{ fontSize: 16 }} />
                 </div>
-                <div className="r2">
+                <div className="r3">
                   <div className="fg">
                     <label>Program</label>
                     <select value={lookupProgramFilter} onChange={e => handleLookupProgramFilter(e.target.value)}>
@@ -1212,7 +1219,16 @@ export default function App() {
                       {levelOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
                     </select>
                   </div>
+                  <div className="fg">
+                    <label>Gender</label>
+                    <select value={lookupGenderFilter} onChange={e => handleLookupGenderFilter(e.target.value)}>
+                      <option value="">All genders</option>
+                      <option value="Male">Male</option>
+                      <option value="Female">Female</option>
+                    </select>
+                  </div>
                 </div>
+                {hasLookupInput && <div style={{ marginTop: 10, fontSize: 12, color: "#888", fontWeight: 600 }}>{resultLabel}</div>}
                 {hasLookupInput && !lookupResults.length && <div style={{ marginTop: 10, fontSize: 13, color: "#bbb" }}>No results.</div>}
               </div>
               {lookupResults.map(person => {
