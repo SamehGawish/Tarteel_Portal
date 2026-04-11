@@ -414,6 +414,8 @@ export default function App() {
   const [teacherMsg, setTeacherMsg] = useState("");
   const [newLevelInput, setNewLevelInput] = useState({ brothers: "", sisters: "" });
   const [lookupQuery, setLookupQuery] = useState("");
+  const [lookupProgramFilter, setLookupProgramFilter] = useState("");
+  const [lookupLevelFilter, setLookupLevelFilter] = useState("");
   const [lookupResults, setLookupResults] = useState([]);
   const videoRef = useRef(null); const streamRef = useRef(null);
 
@@ -495,7 +497,40 @@ export default function App() {
     setForm(prev => ({ ...prev, linkedPersonId: p.id, familyId: fam ? fam.id : null, firstName: p.firstName, lastName: p.lastName, age: String(p.age), gender: p.gender || "", phone: p.phone || "", email: p.email || "", address: p.address || { street: "", city: "", province: "", postal: "" }, notes: p.notes || "", parent1First: p.parent1First || "", parent1Last: p.parent1Last || "", parent1Phone: p.parent1Phone || "", parent1Email: p.parent1Email || "", parent2First: p.parent2First || "", parent2Last: p.parent2Last || "", parent2Phone: p.parent2Phone || "", parent2Email: p.parent2Email || "", twoParents: p.twoParents || "yes", mainContact: p.mainContact || "parent1", emergencyFirst: p.emergencyFirst || "", emergencyLast: p.emergencyLast || "", emergencyPhone: p.emergencyPhone || "", emergencyRelationship: p.emergencyRelationship || "", hasAllergy: p.hasAllergy === true ? "yes" : p.hasAllergy === false ? "no" : "", allergyNote: p.allergyNote || "", photo: p.photo || null, matchSuggestions: [] }));
   }
   function handleSearch(q) { f("searchQuery", q); if (!q.trim()) { f("matchSuggestions", []); return; } const ql = q.toLowerCase(); f("matchSuggestions", persons.filter(p => (p.firstName + " " + p.lastName).toLowerCase().includes(ql) || (p.parent1First + " " + p.parent1Last).toLowerCase().includes(ql) || (p.parent2First + " " + p.parent2Last).toLowerCase().includes(ql)).slice(0, 6)); }
-  function handleLookup(q) { setLookupQuery(q); if (!q.trim()) { setLookupResults([]); return; } const ql = q.toLowerCase().replace(/[\s\-(). ]/g, ""); setLookupResults(persons.filter(p => { const fields = [p.phone, p.email, p.parent1Phone, p.parent1Email, p.parent2Phone, p.parent2Email, p.firstName + p.lastName, p.parent1First + p.parent1Last, p.parent2First + p.parent2Last].map(x => (x || "").toLowerCase().replace(/[\s\-(). ]/g, "")); return fields.some(fd => fd.includes(ql)); })); }
+  function getEnrollmentLookupLevelValue(enrollment) {
+    if (!enrollment) return "";
+    if (enrollment.program === "juniors") return `juniors:${enrollment.level}`;
+    return `${enrollment.program}:${enrollment.levelName || ""}`;
+  }
+  function runLookup(query, programFilter, levelFilter) {
+    const ql = (query || "").toLowerCase().replace(/[\s\-(). ]/g, "");
+    const hasQuery = Boolean(ql);
+    const hasFilters = Boolean(programFilter || levelFilter);
+    if (!hasQuery && !hasFilters) { setLookupResults([]); return; }
+    setLookupResults(persons.filter(p => {
+      const personEnrollments = enrollments.filter(e => e.personId === p.id && e.active);
+      const matchesProgram = !programFilter || personEnrollments.some(e => e.program === programFilter);
+      const matchesLevel = !levelFilter || personEnrollments.some(e => getEnrollmentLookupLevelValue(e) === levelFilter);
+      if (!matchesProgram || !matchesLevel) return false;
+      if (!hasQuery) return true;
+      const fields = [p.phone, p.email, p.parent1Phone, p.parent1Email, p.parent2Phone, p.parent2Email, p.firstName + p.lastName, p.parent1First + p.parent1Last, p.parent2First + p.parent2Last].map(x => (x || "").toLowerCase().replace(/[\s\-(). ]/g, ""));
+      return fields.some(fd => fd.includes(ql));
+    }));
+  }
+  function handleLookup(q) {
+    setLookupQuery(q);
+    runLookup(q, lookupProgramFilter, lookupLevelFilter);
+  }
+  function handleLookupProgramFilter(program) {
+    setLookupProgramFilter(program);
+    const nextLevel = program === lookupProgramFilter ? lookupLevelFilter : "";
+    if (program !== lookupProgramFilter) setLookupLevelFilter("");
+    runLookup(lookupQuery, program, nextLevel);
+  }
+  function handleLookupLevelFilter(level) {
+    setLookupLevelFilter(level);
+    runLookup(lookupQuery, lookupProgramFilter, level);
+  }
   function openEditEnrollment(enrollment) {
     const person = persons.find(p => p.id === enrollment.personId); if (!person) return;
     const firstPayment = (enrollment.paymentHistory || [])[0];
@@ -1148,27 +1183,61 @@ export default function App() {
       <div className="fade" style={{ padding: pad, maxWidth: 700 }}>
         <h1 style={{ fontSize: isMobile ? 20 : 24, fontWeight: 700, marginBottom: 4 }}>Lookup</h1>
         <p style={{ color: "#aaa", fontSize: 13, marginBottom: 16 }}>Search by name, phone, or email</p>
-        <div className="card" style={{ marginBottom: 14 }}><div className="fg"><label>Name, Phone, or Email</label><input value={lookupQuery} onChange={e => handleLookup(e.target.value)} placeholder="e.g. Ahmed or 6131234567" autoFocus style={{ fontSize: 16 }} /></div>{lookupQuery && !lookupResults.length && <div style={{ marginTop: 8, fontSize: 13, color: "#bbb" }}>No results.</div>}</div>
-        {lookupResults.map(person => {
-          const fam = families.find(fm => fm.personIds && fm.personIds.includes(person.id));
-          const pes = enrollments.filter(e => e.personId === person.id && e.active);
+        {(() => {
+          const levelOptions = lookupProgramFilter === "juniors"
+            ? JUNIOR_LEVELS.map((label, index) => ({ value: `juniors:${index}`, label }))
+            : lookupProgramFilter === "brothers" || lookupProgramFilter === "sisters"
+              ? (adultLevels[lookupProgramFilter] || []).map(label => ({ value: `${lookupProgramFilter}:${label}`, label }))
+              : [];
+          const hasLookupInput = Boolean(lookupQuery || lookupProgramFilter || lookupLevelFilter);
           return (
-            <div key={person.id} className="card" style={{ marginBottom: 12 }}>
-              <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10 }}>
-                {person.photo ? <img src={person.photo} style={{ width: 44, height: 44, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--g)", flexShrink: 0 }} /> : <div style={{ width: 44, height: 44, borderRadius: "50%", background: "#e8f5ee", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>{person.gender === "Female" ? "F" : "M"}</div>}
-                <div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}><span className="sn">{person.studentNum}</span><span style={{ fontSize: 16, fontWeight: 700 }}>{`${person.firstName} ${person.lastName}`}</span></div>
-                  <div style={{ fontSize: 12, color: "#aaa" }}>{`${person.gender} · Age ${person.age}`}</div>
-                  {person.phone && <div style={{ fontSize: 12 }}>{fmtPhone(person.phone)}</div>}
-                  {person.parent1Phone && <div style={{ fontSize: 12 }}>{`${[person.parent1First, person.parent1Last].filter(Boolean).join(" ")}: ${fmtPhone(person.parent1Phone)}`}</div>}
-                  {person.hasAllergy && <span style={{ fontSize: 10, background: "#fdecea", color: "#e74c3c", padding: "1px 5px", borderRadius: 4 }}>{person.allergyNote || "Allergy"}</span>}
+            <>
+              <div className="card" style={{ marginBottom: 14 }}>
+                <div className="fg" style={{ marginBottom: 12 }}>
+                  <label>Name, Phone, or Email</label>
+                  <input value={lookupQuery} onChange={e => handleLookup(e.target.value)} placeholder="e.g. Ahmed or 6131234567" autoFocus style={{ fontSize: 16 }} />
                 </div>
+                <div className="r2">
+                  <div className="fg">
+                    <label>Program</label>
+                    <select value={lookupProgramFilter} onChange={e => handleLookupProgramFilter(e.target.value)}>
+                      <option value="">All programs</option>
+                      {PROGRAM_KEYS.map(pk => <option key={pk} value={pk}>{PROGRAMS[pk]}</option>)}
+                    </select>
+                  </div>
+                  <div className="fg">
+                    <label>Level</label>
+                    <select value={lookupLevelFilter} onChange={e => handleLookupLevelFilter(e.target.value)} disabled={!lookupProgramFilter}>
+                      <option value="">{lookupProgramFilter ? "All levels" : "Select program first"}</option>
+                      {levelOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </div>
+                </div>
+                {hasLookupInput && !lookupResults.length && <div style={{ marginTop: 10, fontSize: 13, color: "#bbb" }}>No results.</div>}
               </div>
-              <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 8 }}>{pes.map(e => <span key={e.id} className={ppill(e.program)}>{`${PROGRAMS[e.program]}${e.levelName ? " · " + e.levelName : ""}`}</span>)}</div>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{fam && <button className="btn bo bsm" onClick={() => { setSelectedFamilyId(fam.id); setView("families"); }}>View Family</button>}{pes.map(e => <button key={e.id} className="btn bg bsm" onClick={() => openEditEnrollment(e)}>{`Edit ${PROGRAMS[e.program]}`}</button>)}</div>
-            </div>
+              {lookupResults.map(person => {
+                const fam = families.find(fm => fm.personIds && fm.personIds.includes(person.id));
+                const pes = enrollments.filter(e => e.personId === person.id && e.active);
+                return (
+                  <div key={person.id} className="card" style={{ marginBottom: 12 }}>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10 }}>
+                      {person.photo ? <img src={person.photo} style={{ width: 44, height: 44, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--g)", flexShrink: 0 }} /> : <div style={{ width: 44, height: 44, borderRadius: "50%", background: "#e8f5ee", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>{person.gender === "Female" ? "F" : "M"}</div>}
+                      <div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}><span className="sn">{person.studentNum}</span><span style={{ fontSize: 16, fontWeight: 700 }}>{`${person.firstName} ${person.lastName}`}</span></div>
+                        <div style={{ fontSize: 12, color: "#aaa" }}>{`${person.gender} · Age ${person.age}`}</div>
+                        {person.phone && <div style={{ fontSize: 12 }}>{fmtPhone(person.phone)}</div>}
+                        {person.parent1Phone && <div style={{ fontSize: 12 }}>{`${[person.parent1First, person.parent1Last].filter(Boolean).join(" ")}: ${fmtPhone(person.parent1Phone)}`}</div>}
+                        {person.hasAllergy && <span style={{ fontSize: 10, background: "#fdecea", color: "#e74c3c", padding: "1px 5px", borderRadius: 4 }}>{person.allergyNote || "Allergy"}</span>}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 8 }}>{pes.map(e => <span key={e.id} className={ppill(e.program)}>{`${PROGRAMS[e.program]} · ${e.program === "juniors" ? (JUNIOR_LEVELS[e.level] || "-") : (e.levelName || "-")}`}</span>)}</div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{fam && <button className="btn bo bsm" onClick={() => { setSelectedFamilyId(fam.id); setView("families"); }}>View Family</button>}{pes.map(e => <button key={e.id} className="btn bg bsm" onClick={() => openEditEnrollment(e)}>{`Edit ${PROGRAMS[e.program]}`}</button>)}</div>
+                  </div>
+                );
+              })}
+            </>
           );
-        })}
+        })()}
       </div>
     );
 
