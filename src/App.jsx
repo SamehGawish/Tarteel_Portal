@@ -148,6 +148,14 @@ function mapTeacherFromDb(t) {
     monthlyRate: Number(t.monthly_rate || 0),
   };
 }
+function escapeHtml(v) {
+  return String(v || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 function buildTeacherState(rows) {
   return {
     juniors: rows.filter(t => t.program === "juniors").map(mapTeacherFromDb),
@@ -417,6 +425,7 @@ export default function App() {
   const [lookupProgramFilter, setLookupProgramFilter] = useState("");
   const [lookupLevelFilter, setLookupLevelFilter] = useState("");
   const [lookupGenderFilter, setLookupGenderFilter] = useState("");
+  const [lookupTeacherFilter, setLookupTeacherFilter] = useState("");
   const [lookupResults, setLookupResults] = useState([]);
   const videoRef = useRef(null); const streamRef = useRef(null);
 
@@ -503,17 +512,21 @@ export default function App() {
     if (enrollment.program === "juniors") return `juniors:${enrollment.level}`;
     return `${enrollment.program}:${enrollment.levelName || ""}`;
   }
-  function runLookup(query, programFilter, levelFilter, genderFilter) {
+  function getEnrollmentLookupLabel(enrollment) {
+    return `${PROGRAMS[enrollment.program]} · ${enrollment.program === "juniors" ? (JUNIOR_LEVELS[enrollment.level] || "-") : (enrollment.levelName || "-")}${enrollment.teacherName ? ` · ${enrollment.teacherName}` : ""}`;
+  }
+  function runLookup(query, programFilter, levelFilter, genderFilter, teacherFilter) {
     const ql = (query || "").toLowerCase().replace(/[\s\-(). ]/g, "");
     const hasQuery = Boolean(ql);
-    const hasFilters = Boolean(programFilter || levelFilter || genderFilter);
+    const hasFilters = Boolean(programFilter || levelFilter || genderFilter || teacherFilter);
     if (!hasQuery && !hasFilters) { setLookupResults([]); return; }
     setLookupResults(persons.filter(p => {
       const personEnrollments = enrollments.filter(e => e.personId === p.id && e.active);
       const matchesProgram = !programFilter || personEnrollments.some(e => e.program === programFilter);
       const matchesLevel = !levelFilter || personEnrollments.some(e => getEnrollmentLookupLevelValue(e) === levelFilter);
       const matchesGender = !genderFilter || p.gender === genderFilter;
-      if (!matchesProgram || !matchesLevel || !matchesGender) return false;
+      const matchesTeacher = !teacherFilter || personEnrollments.some(e => e.teacherId === teacherFilter);
+      if (!matchesProgram || !matchesLevel || !matchesGender || !matchesTeacher) return false;
       if (!hasQuery) return true;
       const fields = [p.phone, p.email, p.parent1Phone, p.parent1Email, p.parent2Phone, p.parent2Email, p.firstName + p.lastName, p.parent1First + p.parent1Last, p.parent2First + p.parent2Last].map(x => (x || "").toLowerCase().replace(/[\s\-(). ]/g, ""));
       return fields.some(fd => fd.includes(ql));
@@ -521,21 +534,85 @@ export default function App() {
   }
   function handleLookup(q) {
     setLookupQuery(q);
-    runLookup(q, lookupProgramFilter, lookupLevelFilter, lookupGenderFilter);
+    runLookup(q, lookupProgramFilter, lookupLevelFilter, lookupGenderFilter, lookupTeacherFilter);
   }
   function handleLookupProgramFilter(program) {
     setLookupProgramFilter(program);
     const nextLevel = program === lookupProgramFilter ? lookupLevelFilter : "";
+    const nextTeacher = program === lookupProgramFilter ? lookupTeacherFilter : "";
     if (program !== lookupProgramFilter) setLookupLevelFilter("");
-    runLookup(lookupQuery, program, nextLevel, lookupGenderFilter);
+    if (program !== lookupProgramFilter) setLookupTeacherFilter("");
+    runLookup(lookupQuery, program, nextLevel, lookupGenderFilter, nextTeacher);
   }
   function handleLookupLevelFilter(level) {
     setLookupLevelFilter(level);
-    runLookup(lookupQuery, lookupProgramFilter, level, lookupGenderFilter);
+    runLookup(lookupQuery, lookupProgramFilter, level, lookupGenderFilter, lookupTeacherFilter);
   }
   function handleLookupGenderFilter(gender) {
     setLookupGenderFilter(gender);
-    runLookup(lookupQuery, lookupProgramFilter, lookupLevelFilter, gender);
+    runLookup(lookupQuery, lookupProgramFilter, lookupLevelFilter, gender, lookupTeacherFilter);
+  }
+  function handleLookupTeacherFilter(teacherId) {
+    setLookupTeacherFilter(teacherId);
+    runLookup(lookupQuery, lookupProgramFilter, lookupLevelFilter, lookupGenderFilter, teacherId);
+  }
+  function printLookupResults() {
+    const popup = window.open("", "_blank", "width=960,height=1200");
+    if (!popup) { alert("Please allow pop-ups to print the lookup results."); return; }
+    const filters = [
+      lookupQuery ? `Search: ${lookupQuery}` : null,
+      lookupProgramFilter ? `Program: ${PROGRAMS[lookupProgramFilter]}` : null,
+      lookupLevelFilter ? `Level: ${lookupProgramFilter === "juniors" ? (JUNIOR_LEVELS[parseInt(lookupLevelFilter.split(":")[1], 10)] || "-") : (lookupLevelFilter.split(":")[1] || "-")}` : null,
+      lookupGenderFilter ? `Gender: ${lookupGenderFilter}` : null,
+      lookupTeacherFilter ? `Teacher: ${[...juniorTeachers, ...(adultTeachers.brothers || []), ...(adultTeachers.sisters || [])].find(t => t.id === lookupTeacherFilter)?.name || "-"}` : null,
+    ].filter(Boolean);
+    const cards = lookupResults.map(person => {
+      const pes = enrollments.filter(e => e.personId === person.id && e.active);
+      return `
+        <section class="card">
+          <div class="title">${escapeHtml(`${person.firstName} ${person.lastName}`)} <span class="student-num">${escapeHtml(person.studentNum || "-")}</span></div>
+          <div class="meta">${escapeHtml(`${person.gender || "-"} · Age ${person.age || "-"}`)}</div>
+          <div class="meta">${escapeHtml(person.phone ? fmtPhone(person.phone) : "")}</div>
+          <div class="meta">${escapeHtml(person.email || "")}</div>
+          ${(person.parent1Phone || person.parent1Email) ? `<div class="meta">${escapeHtml(`${[person.parent1First, person.parent1Last].filter(Boolean).join(" ")}${person.parent1Phone ? ` · ${fmtPhone(person.parent1Phone)}` : ""}${person.parent1Email ? ` · ${person.parent1Email}` : ""}`)}</div>` : ""}
+          <div class="enrollments">
+            ${pes.map(e => `<div class="tag">${escapeHtml(getEnrollmentLookupLabel(e))}</div>`).join("")}
+          </div>
+        </section>
+      `;
+    }).join("");
+    popup.document.write(`
+      <!doctype html>
+      <html>
+        <head>
+          <title>Lookup Results</title>
+          <meta charset="utf-8" />
+          <style>
+            body { font-family: Arial, sans-serif; margin: 32px; color: #222; }
+            h1 { margin: 0 0 6px; font-size: 28px; }
+            .sub { color: #666; margin-bottom: 18px; }
+            .filters { margin: 0 0 22px; padding: 12px 14px; background: #f7f5ef; border-radius: 10px; font-size: 14px; }
+            .count { font-weight: 700; margin-bottom: 18px; }
+            .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; margin-bottom: 12px; break-inside: avoid; }
+            .title { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+            .student-num { font-size: 12px; font-weight: 700; color: #666; margin-left: 8px; }
+            .meta { font-size: 13px; color: #666; margin-bottom: 4px; }
+            .enrollments { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+            .tag { font-size: 12px; padding: 4px 8px; background: #eef6f1; border-radius: 999px; color: #1a6b3a; }
+            @media print { body { margin: 20px; } }
+          </style>
+        </head>
+        <body>
+          <h1>Lookup Results</h1>
+          <div class="sub">${escapeHtml(fmtDate(today()))}</div>
+          <div class="filters">${escapeHtml(filters.length ? filters.join(" | ") : "No filters applied")}</div>
+          <div class="count">${lookupResults.length} ${lookupResults.length === 1 ? "student" : "students"} found</div>
+          ${cards || "<div>No results.</div>"}
+          <script>window.onload = () => window.print();<\/script>
+        </body>
+      </html>
+    `);
+    popup.document.close();
   }
   function openEditEnrollment(enrollment) {
     const person = persons.find(p => p.id === enrollment.personId); if (!person) return;
@@ -1190,6 +1267,15 @@ export default function App() {
         <h1 style={{ fontSize: isMobile ? 20 : 24, fontWeight: 700, marginBottom: 4 }}>Lookup</h1>
         <p style={{ color: "#aaa", fontSize: 13, marginBottom: 16 }}>Search by name, phone, or email</p>
         {(() => {
+          const teacherOptions = (
+            lookupProgramFilter === "juniors"
+              ? juniorTeachers.map(t => ({ value: t.id, label: t.name }))
+              : lookupProgramFilter === "brothers"
+                ? (adultTeachers.brothers || []).map(t => ({ value: t.id, label: t.name }))
+                : lookupProgramFilter === "sisters"
+                  ? (adultTeachers.sisters || []).map(t => ({ value: t.id, label: t.name }))
+                  : [...juniorTeachers, ...(adultTeachers.brothers || []), ...(adultTeachers.sisters || [])].map(t => ({ value: t.id, label: t.name }))
+          ).sort((a, b) => a.label.localeCompare(b.label));
           const levelOptions = lookupProgramFilter === "juniors"
             ? JUNIOR_LEVELS.map((label, index) => ({ value: `juniors:${index}`, label }))
             : lookupProgramFilter === "brothers" || lookupProgramFilter === "sisters"
@@ -1204,7 +1290,7 @@ export default function App() {
                   <label>Name, Phone, or Email</label>
                   <input value={lookupQuery} onChange={e => handleLookup(e.target.value)} placeholder="e.g. Ahmed or 6131234567" autoFocus style={{ fontSize: 16 }} />
                 </div>
-                <div className="r3">
+                <div className="r2" style={{ marginBottom: 12 }}>
                   <div className="fg">
                     <label>Program</label>
                     <select value={lookupProgramFilter} onChange={e => handleLookupProgramFilter(e.target.value)}>
@@ -1219,6 +1305,8 @@ export default function App() {
                       {levelOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
                     </select>
                   </div>
+                </div>
+                <div className="r2">
                   <div className="fg">
                     <label>Gender</label>
                     <select value={lookupGenderFilter} onChange={e => handleLookupGenderFilter(e.target.value)}>
@@ -1227,8 +1315,16 @@ export default function App() {
                       <option value="Female">Female</option>
                     </select>
                   </div>
+                  <div className="fg">
+                    <label>Teacher</label>
+                    <select value={lookupTeacherFilter} onChange={e => handleLookupTeacherFilter(e.target.value)}>
+                      <option value="">All teachers</option>
+                      {teacherOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </div>
                 </div>
                 {hasLookupInput && <div style={{ marginTop: 10, fontSize: 12, color: "#888", fontWeight: 600 }}>{resultLabel}</div>}
+                {lookupResults.length > 0 && <div style={{ marginTop: 12 }}><button className="btn bo bsm" onClick={printLookupResults}>Print / Save PDF</button></div>}
                 {hasLookupInput && !lookupResults.length && <div style={{ marginTop: 10, fontSize: 13, color: "#bbb" }}>No results.</div>}
               </div>
               {lookupResults.map(person => {
