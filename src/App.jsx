@@ -105,6 +105,7 @@ const NAV_ITEMS = [
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function getJuniorBaseRate(n) { if (n === 1) return 210; if (n === 2) return 190; if (n === 3) return 170; return 150; }
+function roundMoney(v) { return Math.round((Number(v) || 0) * 100) / 100; }
 function readStoredJson(key, fallback) { try { const r = window.localStorage.getItem(key); return r ? JSON.parse(r) : fallback; } catch { return fallback; } }
 function readStoredString(key, fallback) { try { return window.localStorage.getItem(key) || fallback; } catch { return fallback; } }
 function readStoredNumber(key, fallback) { try { const r = window.localStorage.getItem(key); const p = parseInt(r || "", 10); return Number.isFinite(p) ? p : fallback; } catch { return fallback; } }
@@ -112,19 +113,61 @@ function mapTeacherFromDb(t) { return { id: t.id, name: t.name, levels: Array.is
 function escapeHtml(v) { return String(v || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 function buildTeacherState(rows) { return { juniors: rows.filter(t => t.program === "juniors").map(mapTeacherFromDb), adults: { brothers: rows.filter(t => t.program === "brothers").map(mapTeacherFromDb), sisters: rows.filter(t => t.program === "sisters").map(mapTeacherFromDb) } }; }
 function buildAdultLevelsState(rows) { const g = { brothers: [], sisters: [] }; rows.slice().sort((a, b) => (a.position ?? 0) - (b.position ?? 0)).forEach(r => { if (r.program === "brothers" || r.program === "sisters") g[r.program].push(r.label); }); return g; }
+function getRecordedPaidAmount(e) {
+  if (!e) return 0;
+  if ((e.paymentHistory || []).length) return roundMoney((e.paymentHistory || []).reduce((sum, payment) => sum + (payment.amount || 0), 0));
+  return roundMoney(e.amountPaid || 0);
+}
+function getEnrollmentPaymentTarget(e) {
+  if (!e || e.paymentType === "waived") return 0;
+  if (e.paymentType === "discounted") return roundMoney(e.discountedAmount || e.semesterTotal || 0);
+  return roundMoney(e.semesterTotal || 0);
+}
 function calcFamilyBilling(family, persons, enrollments, semMonths) {
   const memberIds = family.personIds || [];
   const active = enrollments.filter(e => memberIds.includes(e.personId) && e.active);
   const juniors = active.filter(e => e.program === "juniors");
-  const juniorRate = getJuniorBaseRate(juniors.length);
-  const lineItems = [];
-  juniors.forEach(e => { const p = persons.find(x => x.id === e.personId); const effectiveTotal = e.paymentType === "discounted" ? Math.round((e.discountedAmount || e.semesterTotal || 0) * 100) / 100 : juniorRate; lineItems.push({ enrollmentId: e.id, personId: e.personId, name: p ? `${p.firstName} ${p.lastName}` : "-", program: "juniors", total: effectiveTotal }); });
-  const totalOwed = lineItems.reduce((a, l) => a + l.total, 0);
-  const totalPaid = active.reduce((a, e) => isEnrollmentEffectivelyPaid(e) ? a + (e.semesterTotal || 0) : a + (e.amountPaid || 0), 0);
-  return { lineItems, totalOwed, totalPaid, balance: Math.round((totalOwed - totalPaid) * 100) / 100 };
+  const standardJuniorRate = getJuniorBaseRate(1);
+  const familyJuniorRate = juniors.length ? getJuniorBaseRate(juniors.length) : 0;
+  const lineItems = juniors.map(e => {
+    const p = persons.find(x => x.id === e.personId);
+    const recordedPaid = getRecordedPaidAmount(e);
+    const owed = familyJuniorRate;
+    const payable = e.paymentType === "waived" ? 0 : e.paymentType === "discounted" ? roundMoney(e.discountedAmount || e.semesterTotal || familyJuniorRate) : familyJuniorRate;
+    const paid = e.paymentType === "waived"
+      ? 0
+      : isEnrollmentEffectivelyPaid(e)
+        ? payable
+        : Math.min(recordedPaid, payable);
+    return {
+      enrollmentId: e.id,
+      personId: e.personId,
+      name: p ? `${p.firstName} ${p.lastName}` : "-",
+      program: "juniors",
+      baseTotal: standardJuniorRate,
+      total: owed,
+      paid,
+      balance: roundMoney(Math.max(0, payable - paid)),
+    };
+  });
+  const standardTotal = roundMoney(lineItems.reduce((sum, item) => sum + item.baseTotal, 0));
+  const totalOwed = roundMoney(lineItems.reduce((sum, item) => sum + item.total, 0));
+  const totalPaid = roundMoney(lineItems.reduce((sum, item) => sum + item.paid, 0));
+  const savings = roundMoney(Math.max(0, standardTotal - totalOwed));
+  const balance = roundMoney(lineItems.reduce((sum, item) => sum + item.balance, 0));
+  return { lineItems, standardTotal, totalOwed, totalPaid, savings, balance };
 }
-function isEnrollmentEffectivelyPaid(e) { if (!e) return false; if (e.paymentType === "full" || e.paymentType === "waived" || e.paymentType === "discounted") return true; if (e.paymentType === "instalment") return (e.paymentHistory || []).some(h => h.type === "instalment" && h.method === "IRM Online"); return false; }
-function enrollBalance(e) { return isEnrollmentEffectivelyPaid(e) ? 0 : Math.max(0, (e.semesterTotal || 0) - (e.amountPaid || 0)); }
+function isEnrollmentEffectivelyPaid(e) {
+  if (!e) return false;
+  const target = getEnrollmentPaymentTarget(e);
+  if (target <= 0) return true;
+  return getRecordedPaidAmount(e) >= target;
+}
+function enrollBalance(e) {
+  const target = getEnrollmentPaymentTarget(e);
+  if (target <= 0) return 0;
+  return isEnrollmentEffectivelyPaid(e) ? 0 : roundMoney(Math.max(0, target - getRecordedPaidAmount(e)));
+}
 function cleanPhone(v) { return (v || "").replace(/\D/g, "").slice(0, 10); }
 function sanitizeMoneyInput(v) { const c = (v || "").replace(/[^\d.]/g, ""); const [w = "", ...r] = c.split("."); return r.length ? `${w}.${r.join("").slice(0, 2)}` : w; }
 function validEmail(v) { return !v || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v); }
@@ -453,15 +496,13 @@ export default function App() {
       const discAmt = Math.round((parseFloat(form.discountedAmount) || 0) * 100) / 100;
       const baseSemTotal = isJunior ? getJuniorBaseRate(1) : (form.monthlyRate || 0) * semesterMonths;
       const semTotal = form.paymentType === "discounted" ? discAmt : baseSemTotal;
-      const isIrmInstallment = form.paymentType === "instalment" && form.instalmentMethod === "IRM Online";
       const amountPaid = (form.paymentType === "full" || form.paymentType === "waived" || form.paymentType === "discounted") ? semTotal : (form.paymentType === "instalment" || form.paymentType === "partial") ? initPaid : 0;
-      const effectiveAmountPaid = isIrmInstallment ? semTotal : amountPaid;
       const history = [];
       if (form.paymentType === "full") history.push({ id: uid(), date: form.paymentDate, amount: semTotal, method: form.paymentMethod, note: form.paymentNote || "Paid in Full", type: "full" });
       else if (form.paymentType === "discounted" && discAmt > 0) history.push({ id: uid(), date: form.paymentDate, amount: discAmt, method: form.paymentMethod, note: form.paymentNote || "Discounted total paid", type: "discounted" });
       else if ((form.paymentType === "instalment" || form.paymentType === "partial") && initPaid > 0) history.push({ id: uid(), date: form.instalmentDate, amount: initPaid, method: form.instalmentMethod, note: form.paymentNote || (form.paymentType === "partial" ? "Partial payment" : "Initial instalment"), type: form.paymentType });
       else if (form.paymentType === "waived") history.push({ id: uid(), date: form.paymentDate, amount: 0, method: "-", note: form.paymentNote || `Waived — ${form.waiverType}`, type: "waived" });
-      const enrollData = { id: uid(), personId, program: form.program, level: form.level, levelName: form.levelName, teacherId: form.teacherId, teacherName: form.teacherName, monthlyRate: form.monthlyRate || 0, semesterTotal: semTotal, amountPaid: effectiveAmountPaid, paymentType: form.paymentType, paymentMethod: form.paymentMethod, waiverType: form.waiverType, discountedAmount: discAmt, paymentHistory: history, active: true, semesterLabel };
+      const enrollData = { id: uid(), personId, program: form.program, level: form.level, levelName: form.levelName, teacherId: form.teacherId, teacherName: form.teacherName, monthlyRate: form.monthlyRate || 0, semesterTotal: semTotal, amountPaid, paymentType: form.paymentType, paymentMethod: form.paymentMethod, waiverType: form.waiverType, discountedAmount: discAmt, paymentHistory: history, active: true, semesterLabel };
       const { error: enrollErr } = await supabase.from("enrollments").upsert(mapEnrollmentToDb(enrollData));
       if (enrollErr) throw enrollErr;
       setEnrollments(prev => [...prev, enrollData]);
@@ -475,7 +516,7 @@ export default function App() {
     setSaving(true);
     const entry = { id: uid(), date: instalment.date, amount: amt, method: instalment.method, note: instalment.note, type: "instalment" };
     let updatedEnroll = null;
-    const newEnrollments = enrollments.map(e => { if (e.id !== paymentModal.enrollmentId) return e; const irmPaid = e.paymentType === "instalment" && instalment.method === "IRM Online"; const rawPaid = irmPaid ? (e.semesterTotal || 0) : customBal !== "" ? (e.semesterTotal - parseFloat(customBal)) : (e.amountPaid || 0) + amt; updatedEnroll = { ...e, amountPaid: Math.round(rawPaid * 100) / 100, paymentHistory: [...(e.paymentHistory || []), entry] }; return updatedEnroll; });
+    const newEnrollments = enrollments.map(e => { if (e.id !== paymentModal.enrollmentId) return e; const rawPaid = customBal !== "" ? (getEnrollmentPaymentTarget(e) - parseFloat(customBal)) : (e.amountPaid || 0) + amt; updatedEnroll = { ...e, amountPaid: Math.round(rawPaid * 100) / 100, paymentHistory: [...(e.paymentHistory || []), entry] }; return updatedEnroll; });
     try { if (updatedEnroll) { const { error } = await supabase.from("enrollments").upsert(mapEnrollmentToDb(updatedEnroll)); if (error) throw error; setEnrollments(newEnrollments); const person = persons.find(p => p.id === updatedEnroll.personId); setReceiptModal({ person, enrollment: updatedEnroll, payment: entry, receiptNum: nextReceiptNum(person) }); } } catch (err) { alert("Error saving payment: " + (err.message || JSON.stringify(err))); }
     setInstalment({ amount: "", method: "Cash", date: today(), note: "" }); setCustomBal(""); setPaymentModal(null); setSaving(false);
   }
@@ -484,7 +525,7 @@ export default function App() {
   async function saveEditedPayment() {
     const newAmt = Math.round(parseFloat(editPaymentForm.amount) * 100) / 100; if (isNaN(newAmt) || newAmt < 0) { alert("Enter a valid amount."); return; }
     setSaving(true); let updatedEnroll = null;
-    const newEnrollments = enrollments.map(e => { if (e.id !== editPaymentModal.enrollmentId) return e; const newHistory = (e.paymentHistory || []).map(h => h.id !== editPaymentModal.paymentId ? h : { ...h, amount: newAmt, date: editPaymentForm.date, method: editPaymentForm.method, note: editPaymentForm.note }); const discPay = e.paymentType === "discounted" ? newHistory.find(h => h.type === "discounted") : null; const newSemTotal = discPay ? Math.round((discPay.amount || 0) * 100) / 100 : e.semesterTotal; const irmPaid = e.paymentType === "instalment" && newHistory.some(h => h.type === "instalment" && h.method === "IRM Online"); const newAmtPaid = (e.paymentType === "full" || e.paymentType === "waived" || e.paymentType === "discounted" || irmPaid) ? newSemTotal : Math.round(newHistory.reduce((a, h) => a + (h.amount || 0), 0) * 100) / 100; updatedEnroll = { ...e, paymentHistory: newHistory, semesterTotal: newSemTotal, discountedAmount: discPay ? newSemTotal : e.discountedAmount, amountPaid: newAmtPaid }; return updatedEnroll; });
+    const newEnrollments = enrollments.map(e => { if (e.id !== editPaymentModal.enrollmentId) return e; const newHistory = (e.paymentHistory || []).map(h => h.id !== editPaymentModal.paymentId ? h : { ...h, amount: newAmt, date: editPaymentForm.date, method: editPaymentForm.method, note: editPaymentForm.note }); const discPay = e.paymentType === "discounted" ? newHistory.find(h => h.type === "discounted") : null; const newSemTotal = discPay ? Math.round((discPay.amount || 0) * 100) / 100 : e.semesterTotal; const newAmtPaid = (e.paymentType === "full" || e.paymentType === "waived" || e.paymentType === "discounted") ? newSemTotal : Math.round(newHistory.reduce((a, h) => a + (h.amount || 0), 0) * 100) / 100; updatedEnroll = { ...e, paymentHistory: newHistory, semesterTotal: newSemTotal, discountedAmount: discPay ? newSemTotal : e.discountedAmount, amountPaid: newAmtPaid }; return updatedEnroll; });
     try { if (updatedEnroll) { const { error } = await supabase.from("enrollments").upsert(mapEnrollmentToDb(updatedEnroll)); if (error) throw error; } setEnrollments(newEnrollments); } catch (err) { alert("Error saving: " + (err.message || JSON.stringify(err))); }
     setEditPaymentModal(null); setSaving(false);
   }
@@ -798,14 +839,15 @@ export default function App() {
         <p style={{ color: "#aaa", fontSize: 13, marginBottom: 14 }}>{`${families.length} ${families.length === 1 ? "family" : "families"} — Tarteel Juniors`}</p>
         {families.length === 0 ? <div className="card" style={{ textAlign: "center", padding: 40, color: "#ccc" }}>No families yet.</div>
           : families.map(fam => {
-            const billing = calcFamilyBilling(fam, persons, enrollments, semesterMonths); const isOpen = selectedFamilyId === fam.id; const isCredit = billing.balance < 0;
+            const billing = calcFamilyBilling(fam, persons, enrollments, semesterMonths); const isOpen = selectedFamilyId === fam.id; const hasSavings = billing.savings > 0;
+            const familyLineItemMap = new Map(billing.lineItems.map(item => [item.enrollmentId, item]));
             return (
               <div key={fam.id} style={{ marginBottom: 8 }}>
                 <div className={`card fr${isOpen ? " open" : ""}`} onClick={() => setSelectedFamilyId(isOpen ? null : fam.id)}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <div style={{ width: 38, height: 38, borderRadius: "50%", background: "#e8f5ee", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>👨‍👩‍👧</div>
                     <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 700, fontSize: 14 }}>{fam.name || "-"}</div><div style={{ fontSize: 12, color: "#999", display: "flex", gap: 10, flexWrap: "wrap" }}>{fam.phone && <span>📞 {fmtPhone(fam.phone)}</span>}{fam.email && <span>✉️ {fam.email}</span>}</div></div>
-                    <div style={{ textAlign: "right", flexShrink: 0 }}><span className={isCredit ? "bgld" : billing.balance > 0 ? "brr" : "bgg"} style={{ fontSize: 12 }}>{isCredit ? `Credit $${Math.abs(billing.balance).toFixed(2)}` : `$${billing.balance.toFixed(2)}`}</span><div style={{ fontSize: 10, color: "#bbb", marginTop: 2 }}>{`${(fam.personIds && fam.personIds.length) || 0} children`}</div></div>
+                    <div style={{ textAlign: "right", flexShrink: 0 }}><span className={billing.balance > 0 ? "brr" : hasSavings ? "bgld" : "bgg"} style={{ fontSize: 12 }}>{billing.balance > 0 ? `$${billing.balance.toFixed(2)}` : hasSavings ? `Saved $${billing.savings.toFixed(2)}` : "Paid"}</span><div style={{ fontSize: 10, color: "#bbb", marginTop: 2 }}>{`${(fam.personIds && fam.personIds.length) || 0} children`}</div></div>
                     <div style={{ fontSize: 16, color: "#ccc", transition: "transform .2s", transform: isOpen ? "rotate(90deg)" : "none", flexShrink: 0 }}>{">"}</div>
                   </div>
                 </div>
@@ -814,10 +856,11 @@ export default function App() {
                     <div style={{ background: "#f8f6f1", borderRadius: 10, padding: 14, marginBottom: 14 }}>
                       <div className="sec" style={{ marginBottom: 8 }}>Family Billing</div>
                       {billing.lineItems.map((li, i) => <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "5px 0", borderBottom: "1px solid #eee" }}><span>{li.name}</span><strong>{`$${li.total.toFixed(2)}`}</strong></div>)}
-                      {billing.lineItems.length > 1 && <div style={{ fontSize: 11, color: "#aaa", marginTop: 4 }}>{`Family discount applied — ${billing.lineItems.length} children`}</div>}
+                      {billing.lineItems.length > 1 && billing.savings > 0 && <div style={{ fontSize: 11, color: "#aaa", marginTop: 4 }}>{`Family discount applied — Saved $${billing.savings.toFixed(2)}`}</div>}
                       <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontWeight: 700, fontSize: 13 }}><span>Total Owed</span><span>{`$${billing.totalOwed.toFixed(2)}`}</span></div>
                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#888", marginTop: 2 }}><span>Total Paid</span><span>{`$${billing.totalPaid.toFixed(2)}`}</span></div>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontWeight: 700, fontSize: 14 }}><span>{isCredit ? "Credit" : "Balance"}</span><span style={{ color: isCredit ? "var(--gold)" : billing.balance > 0 ? "var(--red)" : "var(--g)" }}>{isCredit ? `+$${Math.abs(billing.balance).toFixed(2)}` : `$${billing.balance.toFixed(2)}`}</span></div>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontWeight: 700, fontSize: 14 }}><span>Balance</span><span style={{ color: billing.balance > 0 ? "var(--red)" : "var(--g)" }}>{`$${billing.balance.toFixed(2)}`}</span></div>
+                      {billing.savings > 0 && <div style={{ display: "flex", justifyContent: "space-between", marginTop: 2, fontWeight: 700, fontSize: 13 }}><span>Saved</span><span style={{ color: "var(--gold)" }}>{`$${billing.savings.toFixed(2)}`}</span></div>}
                     </div>
                     {(fam.personIds || []).map(pid => {
                       const person = persons.find(p => p.id === pid); if (!person) return null;
@@ -833,7 +876,8 @@ export default function App() {
                             </div>
                           </div>
                           {pes.map(e => {
-                            const eBal = enrollBalance(e);
+                            const familyItem = familyLineItemMap.get(e.id);
+                            const eBal = familyItem ? familyItem.balance : enrollBalance(e);
                             return (
                               <div key={e.id} style={{ background: "#fafaf8", borderRadius: 8, padding: "10px 12px", marginBottom: 6 }}>
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, flexWrap: "wrap", gap: 4 }}>
