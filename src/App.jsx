@@ -91,7 +91,7 @@ const SCHOOL_ADDRESS = "251 Northwestern Ave, Ottawa, ON, K1Y 0M1";
 const DEFAULT_SEMESTER_LABEL = "Fall " + new Date().getFullYear();
 const DEFAULT_JUNIOR_TEACHERS = [{ id: "j1", name: "Ustadh Ibrahim Al-Sayed", levels: [0, 1] }, { id: "j2", name: "Ustadha Fatima Noor", levels: [1, 2] }, { id: "j3", name: "Ustadh Khalid Mansour", levels: [2, 3] }, { id: "j4", name: "Ustadha Maryam Hasan", levels: [3, 4] }, { id: "j5", name: "Ustadh Yusuf Al-Rashid", levels: [0, 2, 4] }];
 const DEFAULT_ADULT_TEACHERS = { brothers: [{ id: "b1", name: "Sh. Saad", monthlyRate: 50 }, { id: "b2", name: "Sh. Abu Kudus", monthlyRate: 100 }, { id: "b3", name: "Ust. Abdullah", monthlyRate: 50 }], sisters: [{ id: "s1", name: "Ust. Reham", monthlyRate: 50 }, { id: "s2", name: "Ust. Asmaa", monthlyRate: 50 }, { id: "s3", name: "Ust. Masa", monthlyRate: 100 }, { id: "s4", name: "Ust. Kauthar", monthlyRate: 100 }, { id: "s5", name: "Ust. Karima", monthlyRate: 100 }] };
-const DEFAULT_ADULT_LEVELS = { brothers: ["Beginners", "Intermediate", "Advanced"], sisters: ["Beginners", "Intermediate", "Advanced"] };
+const DEFAULT_ADULT_LEVELS = { brothers: ["Level 1", "Level 2", "Level 3", "Level 4"], sisters: ["Level 1", "Level 2", "Level 3", "Level 4"] };
 const STORAGE_KEYS = { semesterLabel: "tarteel:semester-label", semesterMonths: "tarteel:semester-months", juniorTeachers: "tarteel:junior-teachers", adultTeachers: "tarteel:adult-teachers", adultLevels: "tarteel:adult-levels" };
 const NAV_ITEMS = [
   { id: "dashboard", icon: "⊞", label: "Dashboard" },
@@ -106,13 +106,42 @@ const NAV_ITEMS = [
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function getJuniorBaseRate(n) { if (n === 1) return 210; if (n === 2) return 190; if (n === 3) return 170; return 150; }
 function roundMoney(v) { return Math.round((Number(v) || 0) * 100) / 100; }
+function isFixedAdultPriceProgram(program) { return program === "sisters"; }
+function getAdultProgramTotal(program, rate, semMonths) {
+  const normalizedRate = roundMoney(rate);
+  return isFixedAdultPriceProgram(program) ? normalizedRate : roundMoney(normalizedRate * semMonths);
+}
+function getAdultTeacherRateLabel(program, rate) {
+  const normalizedRate = roundMoney(rate);
+  if (!normalizedRate) return "";
+  return isFixedAdultPriceProgram(program) ? `$${normalizedRate} fixed` : `$${normalizedRate}/mo`;
+}
+function programUsesTeacherLevels(program) { return program === "juniors" || program === "sisters"; }
+function normalizeAdultLevelLabel(label) {
+  const raw = String(label || "").trim();
+  const normalized = raw.toLowerCase();
+  if (!raw) return "";
+  if (normalized === "beginner" || normalized === "beginners" || normalized === "1" || normalized === "level 1") return "Level 1";
+  if (normalized === "intermediate" || normalized === "2" || normalized === "level 2") return "Level 2";
+  if (normalized === "advanced" || normalized === "3" || normalized === "level 3") return "Level 3";
+  if (normalized === "4" || normalized === "level 4") return "Level 4";
+  return raw;
+}
+function getEnrollmentLevelLabel(e) {
+  if (!e) return "-";
+  if (e.program === "juniors") return JUNIOR_LEVELS[e.level] || "-";
+  return normalizeAdultLevelLabel(e.levelName || e.level) || "-";
+}
+function getAdultLevelIndex(program, label) {
+  const normalizedLabel = normalizeAdultLevelLabel(label);
+  return (DEFAULT_ADULT_LEVELS[program] || []).findIndex(level => level === normalizedLabel);
+}
 function readStoredJson(key, fallback) { try { const r = window.localStorage.getItem(key); return r ? JSON.parse(r) : fallback; } catch { return fallback; } }
 function readStoredString(key, fallback) { try { return window.localStorage.getItem(key) || fallback; } catch { return fallback; } }
 function readStoredNumber(key, fallback) { try { const r = window.localStorage.getItem(key); const p = parseInt(r || "", 10); return Number.isFinite(p) ? p : fallback; } catch { return fallback; } }
 function mapTeacherFromDb(t) { return { id: t.id, name: t.name, levels: Array.isArray(t.levels) ? t.levels.map(Number) : [], monthlyRate: Number(t.monthly_rate || 0) }; }
 function escapeHtml(v) { return String(v || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 function buildTeacherState(rows) { return { juniors: rows.filter(t => t.program === "juniors").map(mapTeacherFromDb), adults: { brothers: rows.filter(t => t.program === "brothers").map(mapTeacherFromDb), sisters: rows.filter(t => t.program === "sisters").map(mapTeacherFromDb) } }; }
-function buildAdultLevelsState(rows) { const g = { brothers: [], sisters: [] }; rows.slice().sort((a, b) => (a.position ?? 0) - (b.position ?? 0)).forEach(r => { if (r.program === "brothers" || r.program === "sisters") g[r.program].push(r.label); }); return g; }
 function getRecordedPaidAmount(e) {
   if (!e) return 0;
   if ((e.paymentHistory || []).length) return roundMoney((e.paymentHistory || []).reduce((sum, payment) => sum + (payment.amount || 0), 0));
@@ -262,7 +291,7 @@ function ReceiptView({ person, enrollment, payment, receiptNum, semesterLabel, o
   }
   const rows = [["Student #", (person && person.studentNum) || "-"], ["Student", person ? `${person.firstName} ${person.lastName}` : "-"]];
   if (person && person.dateOfBirth) rows.push(["Date of Birth", fmtDob(person.dateOfBirth)]);
-  rows.push(...[["Program", PROGRAMS[enrollment.program] || ""], ["Teacher", enrollment.teacherName || "-"], ["Level", enrollment.levelName || "-"], ["Semester", semesterLabel], ["Payment Date", fmtDate(payment && payment.date)], ["Method", (payment && payment.method) || "-"], ["Amount Paid", `$${Number((payment && payment.amount) || 0).toFixed(2)}`]]);
+  rows.push(...[["Program", PROGRAMS[enrollment.program] || ""], ["Teacher", enrollment.teacherName || "-"], ["Level", getEnrollmentLevelLabel(enrollment)], ["Semester", semesterLabel], ["Payment Date", fmtDate(payment && payment.date)], ["Method", (payment && payment.method) || "-"], ["Amount Paid", `$${Number((payment && payment.amount) || 0).toFixed(2)}`]]);
   if (payment && payment.note) rows.push(["Note", payment.note]);
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1100, padding: 16 }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
@@ -319,7 +348,7 @@ export default function App() {
   const [semesterMonths, setSemesterMonths] = useState(() => readStoredNumber(STORAGE_KEYS.semesterMonths, SEMESTER_MONTHS_DEFAULT));
   const [juniorTeachers, setJuniorTeachers] = useState(() => readStoredJson(STORAGE_KEYS.juniorTeachers, DEFAULT_JUNIOR_TEACHERS));
   const [adultTeachers, setAdultTeachers] = useState(() => readStoredJson(STORAGE_KEYS.adultTeachers, DEFAULT_ADULT_TEACHERS));
-  const [adultLevels, setAdultLevels] = useState(() => readStoredJson(STORAGE_KEYS.adultLevels, DEFAULT_ADULT_LEVELS));
+  const adultLevels = DEFAULT_ADULT_LEVELS;
   const [form, setForm] = useState(INIT_FORM);
   const [selectedFamilyId, setSelectedFamilyId] = useState(null);
   const [paymentModal, setPaymentModal] = useState(null);
@@ -332,7 +361,6 @@ export default function App() {
   const [teacherForm, setTeacherForm] = useState({ program: "juniors", name: "", levels: [], monthlyRate: "" });
   const [editingTeacherId, setEditingTeacherId] = useState(null);
   const [teacherMsg, setTeacherMsg] = useState("");
-  const [newLevelInput, setNewLevelInput] = useState({ brothers: "", sisters: "" });
   const [lookupQuery, setLookupQuery] = useState("");
   const [lookupProgramFilter, setLookupProgramFilter] = useState("");
   const [lookupLevelFilter, setLookupLevelFilter] = useState("");
@@ -351,9 +379,8 @@ export default function App() {
         setPersons((p || []).map(mapPersonFromDb)); setFamilies((f || []).map(mapFamilyFromDb)); setEnrollments((e || []).map(mapEnrollmentFromDb));
         const nums = (p || []).map(x => parseInt((x.student_num || "").replace("T-", ""))).filter(n => !isNaN(n));
         if (nums.length) studentCounter = Math.max(...nums);
-        const [{ data: tRows, error: tErr }, { data: lRows, error: lErr }] = await Promise.all([supabase.from("teachers").select("*").order("created_at", { ascending: true }), supabase.from("program_levels").select("*").order("position", { ascending: true })]);
+        const { data: tRows, error: tErr } = await supabase.from("teachers").select("*").order("created_at", { ascending: true });
         if (!tErr) { const ts = buildTeacherState(tRows || []); setJuniorTeachers(ts.juniors); setAdultTeachers(ts.adults); }
-        if (!lErr) setAdultLevels(buildAdultLevelsState(lRows || []));
       } catch (err) { setDbError("Could not connect to database. Check your Supabase credentials."); }
       setLoading(false);
     }
@@ -364,7 +391,6 @@ export default function App() {
   useEffect(() => { window.localStorage.setItem(STORAGE_KEYS.semesterMonths, String(semesterMonths)); }, [semesterMonths]);
   useEffect(() => { window.localStorage.setItem(STORAGE_KEYS.juniorTeachers, JSON.stringify(juniorTeachers)); }, [juniorTeachers]);
   useEffect(() => { window.localStorage.setItem(STORAGE_KEYS.adultTeachers, JSON.stringify(adultTeachers)); }, [adultTeachers]);
-  useEffect(() => { window.localStorage.setItem(STORAGE_KEYS.adultLevels, JSON.stringify(adultLevels)); }, [adultLevels]);
 
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
   const age = parseInt(form.age) || 0;
@@ -374,7 +400,12 @@ export default function App() {
   const editingEnrollment = form.editingEnrollId ? enrollments.find(e => e.id === form.editingEnrollId) : null;
   const editingPaymentCount = editingEnrollment ? (editingEnrollment.paymentHistory || []).length : 0;
   const currentAdultTeachers = adultTeachers[form.program] || [];
-  const eligibleTeachers = isJunior && form.level !== "" ? juniorTeachers.filter(t => t.levels.includes(parseInt(form.level))) : isJunior ? [] : currentAdultTeachers;
+  const selectedAdultLevelIndex = getAdultLevelIndex(form.program, form.levelName || form.level);
+  const eligibleTeachers = isJunior
+    ? (form.level !== "" ? juniorTeachers.filter(t => t.levels.includes(parseInt(form.level))) : [])
+    : form.program === "sisters"
+      ? (selectedAdultLevelIndex >= 0 ? currentAdultTeachers.filter(t => (t.levels || []).includes(selectedAdultLevelIndex)) : [])
+      : currentAdultTeachers;
 
   // Auto-fill age from DOB when DOB is entered
   function handleDobChange(dob) {
@@ -398,8 +429,8 @@ export default function App() {
   function autoFill(p) { const fam = families.find(fm => fm.personIds && fm.personIds.includes(p.id)); setForm(prev => ({ ...prev, linkedPersonId: p.id, familyId: fam ? fam.id : null, firstName: p.firstName, lastName: p.lastName, age: String(p.age), dateOfBirth: p.dateOfBirth || "", gender: p.gender || "", phone: p.phone || "", email: p.email || "", address: p.address || { street: "", city: "", province: "", postal: "" }, notes: p.notes || "", parent1First: p.parent1First || "", parent1Last: p.parent1Last || "", parent1Phone: p.parent1Phone || "", parent1Email: p.parent1Email || "", parent2First: p.parent2First || "", parent2Last: p.parent2Last || "", parent2Phone: p.parent2Phone || "", parent2Email: p.parent2Email || "", twoParents: p.twoParents || "yes", mainContact: p.mainContact || "parent1", emergencyFirst: p.emergencyFirst || "", emergencyLast: p.emergencyLast || "", emergencyPhone: p.emergencyPhone || "", emergencyRelationship: p.emergencyRelationship || "", hasAllergy: p.hasAllergy === true ? "yes" : p.hasAllergy === false ? "no" : "", allergyNote: p.allergyNote || "", photo: p.photo || null, matchSuggestions: [] })); }
   function handleSearch(q) { f("searchQuery", q); if (!q.trim()) { f("matchSuggestions", []); return; } const ql = q.toLowerCase(); f("matchSuggestions", persons.filter(p => (p.firstName + " " + p.lastName).toLowerCase().includes(ql) || (p.parent1First + " " + p.parent1Last).toLowerCase().includes(ql) || (p.parent2First + " " + p.parent2Last).toLowerCase().includes(ql)).slice(0, 6)); }
 
-  function getEnrollmentLookupLevelValue(e) { if (!e) return ""; if (e.program === "juniors") return `juniors:${e.level}`; return `${e.program}:${e.levelName || ""}`; }
-  function getEnrollmentLookupLabel(e) { return `${PROGRAMS[e.program]} · ${e.program === "juniors" ? (JUNIOR_LEVELS[e.level] || "-") : (e.levelName || "-")}${e.teacherName ? ` · ${e.teacherName}` : ""}`; }
+  function getEnrollmentLookupLevelValue(e) { if (!e) return ""; if (e.program === "juniors") return `juniors:${e.level}`; return `${e.program}:${normalizeAdultLevelLabel(e.levelName || e.level) || ""}`; }
+  function getEnrollmentLookupLabel(e) { return `${PROGRAMS[e.program]} · ${getEnrollmentLevelLabel(e)}${e.teacherName ? ` · ${e.teacherName}` : ""}`; }
   function runLookup(query, pf, lf, gf, tf) {
     const ql = (query || "").toLowerCase().replace(/[\s\-(). ]/g, "");
     if (!ql && !pf && !lf && !gf && !tf) { setLookupResults([]); return; }
@@ -434,7 +465,7 @@ export default function App() {
   function openEditEnrollment(enrollment) {
     const person = persons.find(p => p.id === enrollment.personId); if (!person) return;
     const firstPayment = (enrollment.paymentHistory || [])[0];
-    setForm({ ...INIT_FORM, mode: "existing", editingEnrollId: enrollment.id, linkedPersonId: person.id, firstName: person.firstName, lastName: person.lastName, age: String(person.age), dateOfBirth: person.dateOfBirth || "", gender: person.gender || "", phone: person.phone || "", email: person.email || "", address: person.address || { street: "", city: "", province: "", postal: "" }, notes: person.notes || "", parent1First: person.parent1First || "", parent1Last: person.parent1Last || "", parent1Phone: person.parent1Phone || "", parent1Email: person.parent1Email || "", parent2First: person.parent2First || "", parent2Last: person.parent2Last || "", parent2Phone: person.parent2Phone || "", parent2Email: person.parent2Email || "", twoParents: person.twoParents || "yes", mainContact: person.mainContact || "parent1", emergencyFirst: person.emergencyFirst || "", emergencyLast: person.emergencyLast || "", emergencyPhone: person.emergencyPhone || "", emergencyRelationship: person.emergencyRelationship || "", hasAllergy: person.hasAllergy === true ? "yes" : person.hasAllergy === false ? "no" : "", allergyNote: person.allergyNote || "", photo: person.photo || null, program: enrollment.program, level: String(enrollment.level != null ? enrollment.level : ""), levelName: enrollment.levelName || "", teacherId: enrollment.teacherId, teacherName: enrollment.teacherName, monthlyRate: enrollment.monthlyRate || 0, paymentType: enrollment.paymentType, paymentMethod: enrollment.paymentMethod || firstPayment?.method || "Cash", waiverType: enrollment.waiverType || "Scholarship", discountedAmount: enrollment.discountedAmount ? String(enrollment.discountedAmount) : "", instalmentMethod: firstPayment?.method || "Cash" });
+    setForm({ ...INIT_FORM, mode: "existing", editingEnrollId: enrollment.id, linkedPersonId: person.id, firstName: person.firstName, lastName: person.lastName, age: String(person.age), dateOfBirth: person.dateOfBirth || "", gender: person.gender || "", phone: person.phone || "", email: person.email || "", address: person.address || { street: "", city: "", province: "", postal: "" }, notes: person.notes || "", parent1First: person.parent1First || "", parent1Last: person.parent1Last || "", parent1Phone: person.parent1Phone || "", parent1Email: person.parent1Email || "", parent2First: person.parent2First || "", parent2Last: person.parent2Last || "", parent2Phone: person.parent2Phone || "", parent2Email: person.parent2Email || "", twoParents: person.twoParents || "yes", mainContact: person.mainContact || "parent1", emergencyFirst: person.emergencyFirst || "", emergencyLast: person.emergencyLast || "", emergencyPhone: person.emergencyPhone || "", emergencyRelationship: person.emergencyRelationship || "", hasAllergy: person.hasAllergy === true ? "yes" : person.hasAllergy === false ? "no" : "", allergyNote: person.allergyNote || "", photo: person.photo || null, program: enrollment.program, level: enrollment.program === "juniors" ? String(enrollment.level != null ? enrollment.level : "") : normalizeAdultLevelLabel(enrollment.levelName || enrollment.level), levelName: enrollment.program === "juniors" ? (enrollment.levelName || "") : normalizeAdultLevelLabel(enrollment.levelName || enrollment.level), teacherId: enrollment.teacherId, teacherName: enrollment.teacherName, monthlyRate: enrollment.monthlyRate || 0, paymentType: enrollment.paymentType, paymentMethod: enrollment.paymentMethod || firstPayment?.method || "Cash", waiverType: enrollment.waiverType || "Scholarship", discountedAmount: enrollment.discountedAmount ? String(enrollment.discountedAmount) : "", instalmentMethod: firstPayment?.method || "Cash" });
     setView("enroll");
   }
   function startCamera() { navigator.mediaDevices.getUserMedia({ video: true }).then(s => { streamRef.current = s; if (videoRef.current) videoRef.current.srcObject = s; setCameraActive(true); }).catch(() => alert("Camera unavailable.")); }
@@ -481,10 +512,19 @@ export default function App() {
       if (form.editingEnrollId) {
         const updatedEnroll = enrollments.find(e => e.id === form.editingEnrollId);
         if (updatedEnroll) {
+          const updatedRate = form.monthlyRate || 0;
+          const updatedSemesterTotal = updatedEnroll.program === "juniors"
+            ? updatedEnroll.semesterTotal
+            : updatedEnroll.paymentType === "discounted"
+              ? roundMoney(updatedEnroll.discountedAmount || getAdultProgramTotal(updatedEnroll.program, updatedRate, semesterMonths))
+              : getAdultProgramTotal(updatedEnroll.program, updatedRate, semesterMonths);
           let paymentHistory = updatedEnroll.paymentHistory || []; let paymentMethod = updatedEnroll.paymentMethod;
-          if (updatedEnroll.paymentType === "full" || updatedEnroll.paymentType === "discounted") { paymentMethod = form.paymentMethod; paymentHistory = paymentHistory.map((h, i) => i === 0 ? { ...h, method: form.paymentMethod } : h); }
+          if (updatedEnroll.paymentType === "full" || updatedEnroll.paymentType === "discounted") { paymentMethod = form.paymentMethod; paymentHistory = paymentHistory.map((h, i) => i === 0 ? { ...h, method: form.paymentMethod, amount: updatedSemesterTotal } : h); }
           else if ((updatedEnroll.paymentType === "instalment" || updatedEnroll.paymentType === "partial") && paymentHistory.length <= 1) { paymentMethod = form.instalmentMethod; paymentHistory = paymentHistory.map((h, i) => i === 0 ? { ...h, method: form.instalmentMethod } : h); }
-          const newE = { ...updatedEnroll, teacherId: form.teacherId, teacherName: form.teacherName, level: form.level, levelName: form.levelName, monthlyRate: form.monthlyRate || 0, paymentMethod, paymentHistory };
+          const updatedAmountPaid = updatedEnroll.program !== "juniors" && (updatedEnroll.paymentType === "full" || updatedEnroll.paymentType === "waived" || updatedEnroll.paymentType === "discounted")
+            ? updatedSemesterTotal
+            : updatedEnroll.amountPaid;
+          const newE = { ...updatedEnroll, teacherId: form.teacherId, teacherName: form.teacherName, level: form.level, levelName: form.levelName, monthlyRate: updatedRate, semesterTotal: updatedSemesterTotal, amountPaid: updatedAmountPaid, paymentMethod, paymentHistory };
           const { error: eErr } = await supabase.from("enrollments").upsert(mapEnrollmentToDb(newE));
           if (eErr) throw eErr;
           setEnrollments(prev => prev.map(e => e.id === form.editingEnrollId ? newE : e));
@@ -494,7 +534,7 @@ export default function App() {
 
       const initPaid = Math.round((parseFloat(form.instalmentPaid) || 0) * 100) / 100;
       const discAmt = Math.round((parseFloat(form.discountedAmount) || 0) * 100) / 100;
-      const baseSemTotal = isJunior ? getJuniorBaseRate(1) : (form.monthlyRate || 0) * semesterMonths;
+      const baseSemTotal = isJunior ? getJuniorBaseRate(1) : getAdultProgramTotal(form.program, form.monthlyRate || 0, semesterMonths);
       const semTotal = form.paymentType === "discounted" ? discAmt : baseSemTotal;
       const amountPaid = (form.paymentType === "full" || form.paymentType === "waived" || form.paymentType === "discounted") ? semTotal : (form.paymentType === "instalment" || form.paymentType === "partial") ? initPaid : 0;
       const history = [];
@@ -555,15 +595,14 @@ export default function App() {
 
   function issueReceiptFor(enrollment, payment) { const person = persons.find(p => p.id === enrollment.personId); setReceiptModal({ person, enrollment, payment, receiptNum: nextReceiptNum(person) }); }
 
-  async function persistAdultLevels(program, nextLevels) { await supabase.from("program_levels").delete().eq("program", program); if (!nextLevels.length) return; await supabase.from("program_levels").insert(nextLevels.map((label, index) => ({ program, label, position: index }))); }
   async function saveTeacher() {
     if (!teacherForm.name.trim()) { setTeacherMsg("Name required."); return; }
-    if (teacherForm.program === "juniors" && !teacherForm.levels.length) { setTeacherMsg("Assign at least one level."); return; }
-    if (teacherForm.program !== "juniors" && !teacherForm.monthlyRate) { setTeacherMsg("Monthly rate required."); return; }
+    if (programUsesTeacherLevels(teacherForm.program) && !teacherForm.levels.length) { setTeacherMsg("Assign at least one level."); return; }
+    if (teacherForm.program !== "juniors" && !teacherForm.monthlyRate) { setTeacherMsg(teacherForm.program === "sisters" ? "Fixed fee required." : "Monthly rate required."); return; }
     setSaving(true);
     const t = { id: editingTeacherId || uid(), name: teacherForm.name, levels: teacherForm.levels, monthlyRate: parseFloat(teacherForm.monthlyRate) || 0 };
     try {
-      const { error } = await supabase.from("teachers").upsert({ id: t.id, program: teacherForm.program, name: t.name, levels: teacherForm.program === "juniors" ? t.levels : [], monthly_rate: teacherForm.program === "juniors" ? null : t.monthlyRate });
+      const { error } = await supabase.from("teachers").upsert({ id: t.id, program: teacherForm.program, name: t.name, levels: programUsesTeacherLevels(teacherForm.program) ? t.levels : [], monthly_rate: teacherForm.program === "juniors" ? null : t.monthlyRate });
       if (error) throw error;
       if (teacherForm.program === "juniors") setJuniorTeachers(p => editingTeacherId ? p.map(x => x.id === editingTeacherId ? t : x) : [...p, t]);
       else setAdultTeachers(p => ({ ...p, [teacherForm.program]: editingTeacherId ? (p[teacherForm.program] || []).map(x => x.id === editingTeacherId ? t : x) : [...(p[teacherForm.program] || []), t] }));
@@ -575,20 +614,6 @@ export default function App() {
     if (!window.confirm("Remove?")) return; setSaving(true);
     try { await supabase.from("teachers").delete().eq("id", teacherId); if (program === "juniors") setJuniorTeachers(p => p.filter(x => x.id !== teacherId)); else setAdultTeachers(p => ({ ...p, [program]: p[program].filter(x => x.id !== teacherId) })); }
     catch { setTeacherMsg("Could not delete teacher."); setTimeout(() => setTeacherMsg(""), 2500); }
-    setSaving(false);
-  }
-  async function addAdultLevel(program) {
-    const label = (newLevelInput[program] || "").trim(); if (!label) return;
-    const current = adultLevels[program] || []; if (current.includes(label)) { setTeacherMsg("Level already exists."); setTimeout(() => setTeacherMsg(""), 2500); return; }
-    const nextLevels = [...current, label]; setSaving(true);
-    try { await persistAdultLevels(program, nextLevels); setAdultLevels(p => ({ ...p, [program]: nextLevels })); setNewLevelInput(p => ({ ...p, [program]: "" })); }
-    catch { setTeacherMsg("Could not save levels."); setTimeout(() => setTeacherMsg(""), 2500); }
-    setSaving(false);
-  }
-  async function deleteAdultLevel(program, label) {
-    const nextLevels = (adultLevels[program] || []).filter(l => l !== label); setSaving(true);
-    try { await persistAdultLevels(program, nextLevels); setAdultLevels(p => ({ ...p, [program]: nextLevels })); }
-    catch { setTeacherMsg("Could not delete level."); setTimeout(() => setTeacherMsg(""), 2500); }
     setSaving(false);
   }
 
@@ -731,7 +756,7 @@ export default function App() {
                       <td style={{ fontSize: 11 }}>{person.gender === "Female" ? "F" : "M"}</td>
                       <td>{person.age}</td>
                       <td style={{ fontSize: 11, color: "#888", whiteSpace: "nowrap" }}>{person.dateOfBirth ? fmtDob(person.dateOfBirth) : <span style={{ color: "#ccc" }}>—</span>}</td>
-                      <td style={{ fontSize: 12 }}>{activeProg === "juniors" ? (JUNIOR_LEVELS[e.level] || "-") : (e.levelName || "-")}</td>
+                      <td style={{ fontSize: 12 }}>{getEnrollmentLevelLabel(e)}</td>
                       <td><span className={e.paymentType === "full" ? "bgg" : e.paymentType === "waived" ? "bgld" : "bgry"} style={{ fontSize: 10 }}>{ptypeLabel(e.paymentType)}</span>{lastPay && <div style={{ fontSize: 10, color: "#bbb" }}>{fmtDate(lastPay.date)}</div>}</td>
                       <td><span className={bal > 0 ? "brr" : "bgg"} style={{ fontSize: 11 }}>{`$${bal.toFixed(2)}`}</span></td>
                       <td><div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}><button className="btn bg bxs" onClick={() => openEditEnrollment(e)}>Edit</button>{["instalment", "partial", "discounted"].includes(e.paymentType) && bal > 0 && <button className="btn bgold bxs" onClick={() => setPaymentModal({ enrollmentId: e.id })}>+Pay</button>}{lastPay && <button className="btn bo bxs" onClick={() => issueReceiptFor(e, lastPay)}>Rec.</button>}<button className="btn bd bxs" onClick={() => deleteEnrollment(e.id)}>Del</button></div></td>
@@ -801,9 +826,9 @@ export default function App() {
         <div className="card" style={{ marginBottom: 14 }}>
           <div className="sec">Class Assignment</div>
           {isJunior && <div className="fg" style={{ marginBottom: 12 }}><label>Level *</label><select value={form.level} onChange={e => { f("level", e.target.value); f("levelName", JUNIOR_LEVELS[e.target.value] || ""); f("teacherId", ""); }}><option value="">Select level...</option>{JUNIOR_LEVELS.map((l, i) => <option key={i} value={i}>{l}</option>)}</select></div>}
-          {!isJunior && <div className="fg" style={{ marginBottom: 12 }}><label>Level</label><select value={form.levelName} onChange={e => { f("levelName", e.target.value); f("level", e.target.value); }}><option value="">Select level...</option>{(adultLevels[form.program] || []).map(l => <option key={l}>{l}</option>)}</select></div>}
-          <div className="fg"><label>Teacher *</label><select value={form.teacherId} onChange={e => { const t = eligibleTeachers.find(x => x.id === e.target.value); f("teacherId", e.target.value); f("teacherName", t ? t.name : ""); f("monthlyRate", t ? (t.monthlyRate || 0) : 0); }} disabled={isJunior && form.level === ""}><option value="">{isJunior && form.level === "" ? "Select level first" : "Select teacher..."}</option>{eligibleTeachers.map(t => <option key={t.id} value={t.id}>{t.name + (t.monthlyRate ? ` — $${t.monthlyRate}/mo` : "")}</option>)}</select></div>
-          {form.teacherId && !isJunior && form.monthlyRate > 0 && <div style={{ marginTop: 8, padding: "8px 12px", background: "#f0faf4", borderRadius: 8, fontSize: 13 }}>{`Monthly: $${form.monthlyRate} — Semester (${semesterMonths} mo): $${form.monthlyRate * semesterMonths}`}</div>}
+          {!isJunior && <div className="fg" style={{ marginBottom: 12 }}><label>Level</label><select value={normalizeAdultLevelLabel(form.levelName)} onChange={e => { f("levelName", e.target.value); f("level", e.target.value); }}><option value="">Select level...</option>{(adultLevels[form.program] || []).map(l => <option key={l}>{l}</option>)}</select></div>}
+          <div className="fg"><label>Teacher *</label><select value={form.teacherId} onChange={e => { const t = eligibleTeachers.find(x => x.id === e.target.value); f("teacherId", e.target.value); f("teacherName", t ? t.name : ""); f("monthlyRate", t ? (t.monthlyRate || 0) : 0); }} disabled={(isJunior && form.level === "") || (form.program === "sisters" && selectedAdultLevelIndex < 0)}><option value="">{(isJunior && form.level === "") || (form.program === "sisters" && selectedAdultLevelIndex < 0) ? "Select level first" : "Select teacher..."}</option>{eligibleTeachers.map(t => <option key={t.id} value={t.id}>{t.name + (t.monthlyRate ? ` — ${getAdultTeacherRateLabel(form.program, t.monthlyRate)}` : "")}</option>)}</select></div>
+          {form.teacherId && !isJunior && form.monthlyRate > 0 && <div style={{ marginTop: 8, padding: "8px 12px", background: "#f0faf4", borderRadius: 8, fontSize: 13 }}>{form.program === "sisters" ? `Fixed fee: $${roundMoney(form.monthlyRate)}` : `Monthly: $${roundMoney(form.monthlyRate)} — Semester (${semesterMonths} mo): $${getAdultProgramTotal(form.program, form.monthlyRate, semesterMonths)}`}</div>}
         </div>
 
         <div className="card" style={{ marginBottom: 22 }}>
@@ -946,7 +971,7 @@ export default function App() {
                         {person.hasAllergy && <span style={{ fontSize: 10, background: "#fdecea", color: "#e74c3c", padding: "1px 5px", borderRadius: 4 }}>{person.allergyNote || "Allergy"}</span>}
                       </div>
                     </div>
-                    <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 8 }}>{pes.map(e => <span key={e.id} className={ppill(e.program)}>{`${PROGRAMS[e.program]} · ${e.program === "juniors" ? (JUNIOR_LEVELS[e.level] || "-") : (e.levelName || "-")}`}</span>)}</div>
+                    <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 8 }}>{pes.map(e => <span key={e.id} className={ppill(e.program)}>{`${PROGRAMS[e.program]} · ${getEnrollmentLevelLabel(e)}`}</span>)}</div>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{fam && <button className="btn bo bsm" onClick={() => { setSelectedFamilyId(fam.id); setView("families"); }}>View Family</button>}{pes.map(e => <button key={e.id} className="btn bg bsm" onClick={() => openEditEnrollment(e)}>{`Edit ${PROGRAMS[e.program]}`}</button>)}</div>
                   </div>
                 );
@@ -963,15 +988,15 @@ export default function App() {
         <p style={{ color: "#aaa", fontSize: 13, marginBottom: 16 }}>Manage teachers and levels</p>
         <div style={{ display: isMobile ? "block" : "grid", gridTemplateColumns: "1fr 300px", gap: 18 }}>
           <div>
-            {["brothers", "sisters"].map(prog => <div key={prog} className="card" style={{ marginBottom: 14, borderTop: `3px solid ${prog === "brothers" ? "var(--bro)" : "var(--sis)"}` }}><div className="sec">{`${PROGRAMS[prog]} — Levels`}</div><div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }}>{(adultLevels[prog] || []).map((l, i) => <span key={i} className="lt">{l}<button onClick={() => deleteAdultLevel(prog, l)}>x</button></span>)}{!(adultLevels[prog] && adultLevels[prog].length) && <span style={{ fontSize: 12, color: "#bbb" }}>No levels yet</span>}</div><div style={{ display: "flex", gap: 7 }}><input value={newLevelInput[prog] || ""} onChange={e => setNewLevelInput(p => ({ ...p, [prog]: e.target.value }))} onKeyDown={e => { if (e.key === "Enter") addAdultLevel(prog); }} placeholder="New level name..." style={{ flex: 1, padding: "8px 12px", border: "1.5px solid #ddd", borderRadius: 8, fontSize: 14, fontFamily: "inherit" }} /><button className="btn bp bsm" onClick={() => addAdultLevel(prog)}>+ Add</button></div></div>)}
-            {[{ prog: "juniors", tList: juniorTeachers, color: "var(--g)" }, { prog: "brothers", tList: adultTeachers.brothers || [], color: "var(--bro)" }, { prog: "sisters", tList: adultTeachers.sisters || [], color: "var(--sis)" }].map(item => <div key={item.prog} className="card" style={{ marginBottom: 12, borderTop: `3px solid ${item.color}` }}><div className="sec">{`${PROGRAMS[item.prog]} — Teachers`}</div>{!item.tList.length ? <div style={{ color: "#ccc", fontSize: 13 }}>No teachers yet.</div> : <div style={{ overflowX: "auto" }}><table className="tbl" style={{ minWidth: 320 }}><thead><tr><th>Name</th><th>{item.prog === "juniors" ? "Levels" : "Rate"}</th><th>Students</th><th></th></tr></thead><tbody>{item.tList.map(t => { const cnt = enrollments.filter(e => e.teacherId === t.id && e.active).length; return <tr key={t.id}><td style={{ fontWeight: 600 }}>{t.name}</td><td>{item.prog === "juniors" ? <div style={{ display: "flex", gap: 3 }}>{(t.levels || []).sort((a, b) => a - b).map(li => <span key={li} className="bgg" style={{ fontSize: 10 }}>{JUNIOR_LEVELS[li]}</span>)}</div> : <span className="bgry">{`$${t.monthlyRate}/mo`}</span>}</td><td><span className="bgry">{cnt}</span></td><td><div style={{ display: "flex", gap: 4 }}><button className="btn bg bsm" onClick={() => { setTeacherForm({ program: item.prog, name: t.name, levels: t.levels || [], monthlyRate: t.monthlyRate || "" }); setEditingTeacherId(t.id); }}>Edit</button><button className="btn bd bsm" onClick={() => deleteTeacher(item.prog, t.id)}>X</button></div></td></tr>; })}</tbody></table></div>}</div>)}
+            {["brothers", "sisters"].map(prog => <div key={prog} className="card" style={{ marginBottom: 14, borderTop: `3px solid ${prog === "brothers" ? "var(--bro)" : "var(--sis)"}` }}><div className="sec">{`${PROGRAMS[prog]} — Levels`}</div><div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }}>{(adultLevels[prog] || []).map((l, i) => <span key={i} className="lt">{l}</span>)}</div><div style={{ fontSize: 12, color: "#888" }}>Adult levels are fixed to Level 1 through Level 4.</div></div>)}
+            {[{ prog: "juniors", tList: juniorTeachers, color: "var(--g)" }, { prog: "brothers", tList: adultTeachers.brothers || [], color: "var(--bro)" }, { prog: "sisters", tList: adultTeachers.sisters || [], color: "var(--sis)" }].map(item => <div key={item.prog} className="card" style={{ marginBottom: 12, borderTop: `3px solid ${item.color}` }}><div className="sec">{`${PROGRAMS[item.prog]} — Teachers`}</div>{!item.tList.length ? <div style={{ color: "#ccc", fontSize: 13 }}>No teachers yet.</div> : <div style={{ overflowX: "auto" }}><table className="tbl" style={{ minWidth: 320 }}><thead><tr><th>Name</th><th>{item.prog === "juniors" ? "Levels" : item.prog === "sisters" ? "Levels / Fee" : "Rate"}</th><th>Students</th><th></th></tr></thead><tbody>{item.tList.map(t => { const cnt = enrollments.filter(e => e.teacherId === t.id && e.active).length; return <tr key={t.id}><td style={{ fontWeight: 600 }}>{t.name}</td><td>{item.prog === "juniors" ? <div style={{ display: "flex", gap: 3 }}>{(t.levels || []).sort((a, b) => a - b).map(li => <span key={li} className="bgg" style={{ fontSize: 10 }}>{JUNIOR_LEVELS[li]}</span>)}</div> : item.prog === "sisters" ? <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>{(t.levels || []).sort((a, b) => a - b).map(li => <span key={li} className="bgg" style={{ fontSize: 10 }}>{adultLevels.sisters[li] || `Level ${li + 1}`}</span>)}<span className="bgry">{getAdultTeacherRateLabel(item.prog, t.monthlyRate)}</span></div> : <span className="bgry">{getAdultTeacherRateLabel(item.prog, t.monthlyRate)}</span>}</td><td><span className="bgry">{cnt}</span></td><td><div style={{ display: "flex", gap: 4 }}><button className="btn bg bsm" onClick={() => { setTeacherForm({ program: item.prog, name: t.name, levels: t.levels || [], monthlyRate: t.monthlyRate || "" }); setEditingTeacherId(t.id); }}>Edit</button><button className="btn bd bsm" onClick={() => deleteTeacher(item.prog, t.id)}>X</button></div></td></tr>; })}</tbody></table></div>}</div>)}
           </div>
           <div className="card" style={{ position: isMobile ? "static" : "sticky", top: 20, marginTop: isMobile ? 14 : 0 }}>
             <div className="sec">{editingTeacherId ? "Edit Teacher" : "Add Teacher"}</div>
             <div className="fg" style={{ marginBottom: 12 }}><label>Program</label><select value={teacherForm.program} onChange={e => setTeacherForm(p => ({ ...p, program: e.target.value, levels: [], monthlyRate: "" }))}>{PROGRAM_KEYS.map(pk => <option key={pk} value={pk}>{PROGRAMS[pk]}</option>)}</select></div>
             <div className="fg" style={{ marginBottom: 12 }}><label>Full Name *</label><input value={teacherForm.name} onChange={e => setTeacherForm(p => ({ ...p, name: e.target.value }))} placeholder="e.g. Ust. Abdullah" /></div>
-            {teacherForm.program === "juniors" ? <div style={{ marginBottom: 12 }}><div style={{ fontSize: 11, fontWeight: 700, color: "#888", textTransform: "uppercase", marginBottom: 7 }}>Assign Levels *</div><div style={{ display: "flex", gap: 7 }}>{JUNIOR_LEVELS.map((l, i) => <div key={i} className={`lchip${teacherForm.levels.includes(i) ? " on" : ""}`} onClick={() => setTeacherForm(p => ({ ...p, levels: p.levels.includes(i) ? p.levels.filter(x => x !== i) : [...p.levels, i] }))} title={l}>{i + 1}</div>)}</div></div>
-              : <div className="fg" style={{ marginBottom: 12 }}><label>Monthly Rate ($) *</label><input type="number" value={teacherForm.monthlyRate} onChange={e => setTeacherForm(p => ({ ...p, monthlyRate: e.target.value }))} placeholder="e.g. 50 or 100" /></div>}
+            {programUsesTeacherLevels(teacherForm.program) && <div style={{ marginBottom: 12 }}><div style={{ fontSize: 11, fontWeight: 700, color: "#888", textTransform: "uppercase", marginBottom: 7 }}>Assign Levels *</div><div style={{ display: "flex", gap: 7 }}>{(teacherForm.program === "juniors" ? JUNIOR_LEVELS : adultLevels.sisters).map((l, i) => <div key={i} className={`lchip${teacherForm.levels.includes(i) ? " on" : ""}`} onClick={() => setTeacherForm(p => ({ ...p, levels: p.levels.includes(i) ? p.levels.filter(x => x !== i) : [...p.levels, i] }))} title={l}>{i + 1}</div>)}</div></div>}
+            {teacherForm.program !== "juniors" && <div className="fg" style={{ marginBottom: 12 }}><label>{teacherForm.program === "sisters" ? "Fixed Fee ($) *" : "Monthly Rate ($) *"}</label><input type="number" value={teacherForm.monthlyRate} onChange={e => setTeacherForm(p => ({ ...p, monthlyRate: e.target.value }))} placeholder={teacherForm.program === "sisters" ? "e.g. 250" : "e.g. 50 or 100"} /></div>}
             {teacherMsg && <div style={{ fontSize: 13, color: "var(--g)", background: "#f0faf4", padding: "7px 12px", borderRadius: 8, marginBottom: 10, fontWeight: 600 }}>{teacherMsg}</div>}
             <div style={{ display: "flex", gap: 7 }}><button className="btn bp" onClick={saveTeacher}>{editingTeacherId ? "Save" : "Add Teacher"}</button>{editingTeacherId && <button className="btn bg" onClick={() => { setTeacherForm({ program: "juniors", name: "", levels: [], monthlyRate: "" }); setEditingTeacherId(null); setTeacherMsg(""); }}>Cancel</button>}</div>
           </div>
