@@ -90,7 +90,8 @@ const SCHOOL_NAME = "Tarteel Ottawa Quran Institute";
 const SCHOOL_ADDRESS = "251 Northwestern Ave, Ottawa, ON, K1Y 0M1";
 const DEFAULT_SEMESTER_LABEL = "Fall " + new Date().getFullYear();
 const DEFAULT_JUNIOR_TEACHERS = [{ id: "j1", name: "Ustadh Ibrahim Al-Sayed", levels: [0, 1] }, { id: "j2", name: "Ustadha Fatima Noor", levels: [1, 2] }, { id: "j3", name: "Ustadh Khalid Mansour", levels: [2, 3] }, { id: "j4", name: "Ustadha Maryam Hasan", levels: [3, 4] }, { id: "j5", name: "Ustadh Yusuf Al-Rashid", levels: [0, 2, 4] }];
-const DEFAULT_ADULT_TEACHERS = { brothers: [{ id: "b1", name: "Sh. Saad", monthlyRate: 50 }, { id: "b2", name: "Sh. Abu Kudus", monthlyRate: 100 }, { id: "b3", name: "Ust. Abdullah", monthlyRate: 50 }], sisters: [{ id: "s1", name: "Ust. Reham", monthlyRate: 50 }, { id: "s2", name: "Ust. Asmaa", monthlyRate: 50 }, { id: "s3", name: "Ust. Masa", monthlyRate: 100 }, { id: "s4", name: "Ust. Kauthar", monthlyRate: 100 }, { id: "s5", name: "Ust. Karima", monthlyRate: 100 }] };
+const DEFAULT_ADULT_TEACHERS = { brothers: [{ id: "b1", name: "Sh. Saad", monthlyRate: 200 }, { id: "b2", name: "Sh. Abu Kudus", monthlyRate: 300 }, { id: "b3", name: "Ust. Abdullah", monthlyRate: 50 }], sisters: [{ id: "s1", name: "Ust. Reham", monthlyRate: 50 }, { id: "s2", name: "Ust. Asmaa", monthlyRate: 50 }, { id: "s3", name: "Ust. Masa", monthlyRate: 100 }, { id: "s4", name: "Ust. Kauthar", monthlyRate: 100 }, { id: "s5", name: "Ust. Karima", monthlyRate: 100 }] };
+const BROTHERS_RATE_OVERRIDES = { b1: 200, b2: 300 };
 const DEFAULT_ADULT_LEVELS = { brothers: ["Level 1", "Level 2", "Level 3", "Level 4", "Level 5"], sisters: ["Level 1", "Level 2", "Level 3", "Level 4", "Level 5"] };
 const STORAGE_KEYS = { semesterLabel: "tarteel:semester-label", semesterMonths: "tarteel:semester-months", juniorTeachers: "tarteel:junior-teachers", adultTeachers: "tarteel:adult-teachers", adultLevels: "tarteel:adult-levels" };
 const NAV_ITEMS = [
@@ -106,7 +107,7 @@ const NAV_ITEMS = [
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function getJuniorBaseRate(n) { if (n === 1) return 210; if (n === 2) return 190; if (n === 3) return 170; return 150; }
 function roundMoney(v) { return Math.round((Number(v) || 0) * 100) / 100; }
-function isFixedAdultPriceProgram(program) { return program === "sisters"; }
+function isFixedAdultPriceProgram(program) { return program === "brothers" || program === "sisters"; }
 function getAdultProgramTotal(program, rate, semMonths) {
   const normalizedRate = roundMoney(rate);
   return isFixedAdultPriceProgram(program) ? normalizedRate : roundMoney(normalizedRate * semMonths);
@@ -136,6 +137,15 @@ function getEnrollmentLevelLabel(e) {
 function getAdultLevelIndex(program, label) {
   const normalizedLabel = normalizeAdultLevelLabel(label);
   return (DEFAULT_ADULT_LEVELS[program] || []).findIndex(level => level === normalizedLabel);
+}
+function applyBrothersRateOverrides(list) {
+  return (list || []).map(teacher => {
+    const normalizedName = String(teacher.name || "").toLowerCase().trim();
+    const byId = BROTHERS_RATE_OVERRIDES[teacher.id];
+    const byName = normalizedName === "sh. saad" ? 200 : normalizedName === "sh. abu kudus" ? 300 : null;
+    const fixedRate = byId != null ? byId : byName;
+    return fixedRate == null ? teacher : { ...teacher, monthlyRate: fixedRate };
+  });
 }
 function readStoredJson(key, fallback) { try { const r = window.localStorage.getItem(key); return r ? JSON.parse(r) : fallback; } catch { return fallback; } }
 function readStoredString(key, fallback) { try { return window.localStorage.getItem(key) || fallback; } catch { return fallback; } }
@@ -218,6 +228,24 @@ function calcAgeFromDob(dob) {
   } catch { return null; }
 }
 function fmtDob(d) { return fmtDate(d); }
+function formatDobDraft(v) {
+  const digits = String(v || "").replace(/\D/g, "").slice(0, 8);
+  if (digits.length <= 4) return digits;
+  if (digits.length <= 6) return `${digits.slice(0, 4)}-${digits.slice(4)}`;
+  return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+}
+function normalizeDobInput(v) {
+  const raw = String(v || "").trim();
+  if (!raw) return "";
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return "";
+  const iso = `${match[1]}-${match[2]}-${match[3]}`;
+  const d = new Date(iso + "T12:00:00");
+  if (Number.isNaN(d.getTime())) return "";
+  if (d.toISOString().slice(0, 10) !== iso) return "";
+  if (iso > today()) return "";
+  return iso;
+}
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 let studentCounter = 1000;
@@ -348,9 +376,14 @@ export default function App() {
   const [semesterLabel, setSemesterLabel] = useState(() => readStoredString(STORAGE_KEYS.semesterLabel, DEFAULT_SEMESTER_LABEL));
   const [semesterMonths, setSemesterMonths] = useState(() => readStoredNumber(STORAGE_KEYS.semesterMonths, SEMESTER_MONTHS_DEFAULT));
   const [juniorTeachers, setJuniorTeachers] = useState(() => readStoredJson(STORAGE_KEYS.juniorTeachers, DEFAULT_JUNIOR_TEACHERS));
-  const [adultTeachers, setAdultTeachers] = useState(() => readStoredJson(STORAGE_KEYS.adultTeachers, DEFAULT_ADULT_TEACHERS));
+  const [adultTeachers, setAdultTeachers] = useState(() => {
+    const stored = readStoredJson(STORAGE_KEYS.adultTeachers, DEFAULT_ADULT_TEACHERS);
+    return { ...stored, brothers: applyBrothersRateOverrides(stored.brothers || []) };
+  });
   const adultLevels = DEFAULT_ADULT_LEVELS;
   const [form, setForm] = useState(INIT_FORM);
+  const [dobInput, setDobInput] = useState("");
+  const [dobError, setDobError] = useState("");
   const [selectedFamilyId, setSelectedFamilyId] = useState(null);
   const [paymentModal, setPaymentModal] = useState(null);
   const [editPaymentModal, setEditPaymentModal] = useState(null);
@@ -381,7 +414,11 @@ export default function App() {
         const nums = (p || []).map(x => parseInt((x.student_num || "").replace("T-", ""))).filter(n => !isNaN(n));
         if (nums.length) studentCounter = Math.max(...nums);
         const { data: tRows, error: tErr } = await supabase.from("teachers").select("*").order("created_at", { ascending: true });
-        if (!tErr) { const ts = buildTeacherState(tRows || []); setJuniorTeachers(ts.juniors); setAdultTeachers(ts.adults); }
+        if (!tErr) {
+          const ts = buildTeacherState(tRows || []);
+          setJuniorTeachers(ts.juniors);
+          setAdultTeachers({ ...ts.adults, brothers: applyBrothersRateOverrides(ts.adults.brothers || []) });
+        }
       } catch (err) { setDbError("Could not connect to database. Check your Supabase credentials."); }
       setLoading(false);
     }
@@ -392,6 +429,7 @@ export default function App() {
   useEffect(() => { window.localStorage.setItem(STORAGE_KEYS.semesterMonths, String(semesterMonths)); }, [semesterMonths]);
   useEffect(() => { window.localStorage.setItem(STORAGE_KEYS.juniorTeachers, JSON.stringify(juniorTeachers)); }, [juniorTeachers]);
   useEffect(() => { window.localStorage.setItem(STORAGE_KEYS.adultTeachers, JSON.stringify(adultTeachers)); }, [adultTeachers]);
+  useEffect(() => { setDobInput(form.dateOfBirth || ""); setDobError(""); }, [form.dateOfBirth]);
 
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
   const age = parseInt(form.age) || 0;
@@ -415,6 +453,22 @@ export default function App() {
       const calculatedAge = calcAgeFromDob(dob);
       if (calculatedAge !== null) f("age", String(calculatedAge));
     }
+  }
+  function commitDobInput(rawDob) {
+    const normalized = normalizeDobInput(rawDob);
+    if (!rawDob) {
+      setDobInput("");
+      setDobError("");
+      if (form.dateOfBirth) handleDobChange("");
+      return;
+    }
+    if (!normalized) {
+      setDobError("Use YYYY-MM-DD and enter a valid date.");
+      return;
+    }
+    setDobInput(normalized);
+    setDobError("");
+    if (normalized !== form.dateOfBirth) handleDobChange(normalized);
   }
 
   useEffect(() => {
@@ -475,6 +529,7 @@ export default function App() {
 
   function validate() {
     if (!form.firstName || !form.lastName || !form.age) return "Student name and age are required.";
+    if (dobInput && !normalizeDobInput(dobInput)) return "Date of birth must be in YYYY-MM-DD format.";
     if (!form.gender) return "Please select a gender.";
     if (form.program === "brothers" && form.gender !== "Male") return "Tarteel Brothers is for male students only.";
     if (form.program === "sisters" && form.gender !== "Female") return "Tarteel Sisters is for female students only.";
@@ -599,7 +654,7 @@ export default function App() {
   async function saveTeacher() {
     if (!teacherForm.name.trim()) { setTeacherMsg("Name required."); return; }
     if (programUsesTeacherLevels(teacherForm.program) && !teacherForm.levels.length) { setTeacherMsg("Assign at least one level."); return; }
-    if (teacherForm.program !== "juniors" && !teacherForm.monthlyRate) { setTeacherMsg(teacherForm.program === "sisters" ? "Fixed fee required." : "Monthly rate required."); return; }
+    if (teacherForm.program !== "juniors" && !teacherForm.monthlyRate) { setTeacherMsg(isFixedAdultPriceProgram(teacherForm.program) ? "Fixed fee required." : "Monthly rate required."); return; }
     setSaving(true);
     const t = { id: editingTeacherId || uid(), name: teacherForm.name, levels: teacherForm.levels, monthlyRate: parseFloat(teacherForm.monthlyRate) || 0 };
     try {
@@ -710,17 +765,6 @@ export default function App() {
   const BottomNav = () => <nav style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "#fff", borderTop: "1px solid var(--border)", display: "flex", zIndex: 900, boxShadow: "0 -2px 12px rgba(0,0,0,.08)" }}>{NAV_ITEMS.map(n => <div key={n.id} onClick={() => { setView(n.id); if (n.id !== "enroll") setForm(INIT_FORM); }} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "8px 4px 10px", cursor: "pointer", color: view === n.id ? "var(--g)" : "#aaa", borderTop: view === n.id ? "2.5px solid var(--g)" : "2.5px solid transparent", transition: "all .15s", minWidth: 0 }}><span style={{ fontSize: 18, lineHeight: 1 }}>{n.icon}</span><span style={{ fontSize: 9.5, fontWeight: view === n.id ? 700 : 500, marginTop: 3 }}>{n.label}</span></div>)}</nav>;
   const MobileHeader = () => <header style={{ position: "sticky", top: 0, zIndex: 800, background: "#fff", borderBottom: "1px solid var(--border)", padding: "10px 16px", display: "flex", alignItems: "center", gap: 10, boxShadow: "0 1px 8px rgba(0,0,0,.06)" }}><img src={LOGO_URL} alt="Tarteel" style={{ width: 34, height: 34, objectFit: "contain", borderRadius: 6 }} /><div><div style={{ fontSize: 13, fontWeight: 700, color: "var(--g)", lineHeight: 1.2 }}>TARTEEL</div><div style={{ fontSize: 9, color: "#bbb", letterSpacing: 1, textTransform: "uppercase" }}>Ottawa Quran Institute</div></div><div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}><div style={{ fontSize: 10, color: "#bbb" }}>{semesterLabel}</div><div onClick={handleLogout} style={{ cursor: "pointer", fontSize: 11, fontWeight: 600, color: "#e74c3c", padding: "5px 10px", border: "1px solid #fcc", borderRadius: 6 }}>Sign Out</div></div></header>;
 
-  // ─── DOB field component (reused in enroll form) ──────────────────────────
-  const DobField = () => (
-    <div className="fg">
-      <label>Date of Birth (optional)</label>
-      <input type="date" value={form.dateOfBirth || ""} onChange={e => handleDobChange(e.target.value)}
-        max={today()}
-        style={{ width: "100%", padding: "10px 13px", border: "1.5px solid #ddd", borderRadius: 8, fontSize: 15, fontFamily: "inherit", background: "#fafafa", color: "#1a1a1a" }} />
-      {form.dateOfBirth && <div style={{ fontSize: 11, color: "#888", marginTop: 3 }}>{`Age auto-filled: ${calcAgeFromDob(form.dateOfBirth)}`}</div>}
-    </div>
-  );
-
   function renderMain() {
     const pad = isMobile ? "14px 14px 90px" : "28px 32px";
 
@@ -788,7 +832,28 @@ export default function App() {
           </div>
           {/* ── DOB row — auto-fills age ── */}
           <div className="r2" style={{ marginBottom: 12 }}>
-            <DobField />
+            <div className="fg">
+              <label>Date of Birth (optional)</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                placeholder="YYYY-MM-DD"
+                value={dobInput}
+                onChange={e => {
+                  const formatted = formatDobDraft(e.target.value);
+                  setDobInput(formatted);
+                  setDobError("");
+                  if (formatted.length === 10) {
+                    const normalized = normalizeDobInput(formatted);
+                    if (normalized) handleDobChange(normalized);
+                  }
+                }}
+                onBlur={() => commitDobInput(dobInput)}
+                style={{ width: "100%", padding: "10px 13px", border: "1.5px solid #ddd", borderRadius: 8, fontSize: 15, fontFamily: "inherit", background: "#fafafa", color: "#1a1a1a" }} />
+              <div style={{ fontSize: 11, color: "#888", marginTop: 3 }}>Type date as YYYY-MM-DD</div>
+              {dobError && <div style={{ fontSize: 11, color: "var(--red)", marginTop: 2 }}>{dobError}</div>}
+              {form.dateOfBirth && <div style={{ fontSize: 11, color: "#888", marginTop: 3 }}>{`Age auto-filled: ${calcAgeFromDob(form.dateOfBirth)}`}</div>}
+            </div>
             <div className="fg">
               <label>Age * {form.dateOfBirth ? <span style={{ color: "#aaa", fontSize: 10, fontWeight: 400 }}>(auto-filled)</span> : ""}</label>
               <input type="number" min={form.program === "juniors" ? 6 : 18} max={99} value={form.age} onChange={e => f("age", e.target.value)} placeholder={form.program === "juniors" ? "Age 6+" : "Age 18+"} />
@@ -829,7 +894,7 @@ export default function App() {
           {isJunior && <div className="fg" style={{ marginBottom: 12 }}><label>Level *</label><select value={form.level} onChange={e => { f("level", e.target.value); f("levelName", JUNIOR_LEVELS[e.target.value] || ""); f("teacherId", ""); }}><option value="">Select level...</option>{JUNIOR_LEVELS.map((l, i) => <option key={i} value={i}>{l}</option>)}</select></div>}
           {!isJunior && <div className="fg" style={{ marginBottom: 12 }}><label>Level</label><select value={normalizeAdultLevelLabel(form.levelName)} onChange={e => { f("levelName", e.target.value); f("level", e.target.value); }}><option value="">Select level...</option>{(adultLevels[form.program] || []).map(l => <option key={l}>{l}</option>)}</select></div>}
           <div className="fg"><label>Teacher *</label><select value={form.teacherId} onChange={e => { const t = eligibleTeachers.find(x => x.id === e.target.value); f("teacherId", e.target.value); f("teacherName", t ? t.name : ""); f("monthlyRate", t ? (t.monthlyRate || 0) : 0); }} disabled={(isJunior && form.level === "") || (form.program === "sisters" && selectedAdultLevelIndex < 0)}><option value="">{(isJunior && form.level === "") || (form.program === "sisters" && selectedAdultLevelIndex < 0) ? "Select level first" : "Select teacher..."}</option>{eligibleTeachers.map(t => <option key={t.id} value={t.id}>{t.name + (t.monthlyRate ? ` — ${getAdultTeacherRateLabel(form.program, t.monthlyRate)}` : "")}</option>)}</select></div>
-          {form.teacherId && !isJunior && form.monthlyRate > 0 && <div style={{ marginTop: 8, padding: "8px 12px", background: "#f0faf4", borderRadius: 8, fontSize: 13 }}>{form.program === "sisters" ? `Fixed fee: $${roundMoney(form.monthlyRate)}` : `Monthly: $${roundMoney(form.monthlyRate)} — Semester (${semesterMonths} mo): $${getAdultProgramTotal(form.program, form.monthlyRate, semesterMonths)}`}</div>}
+          {form.teacherId && !isJunior && form.monthlyRate > 0 && <div style={{ marginTop: 8, padding: "8px 12px", background: "#f0faf4", borderRadius: 8, fontSize: 13 }}>{isFixedAdultPriceProgram(form.program) ? `Fixed fee: $${roundMoney(form.monthlyRate)}` : `Monthly: $${roundMoney(form.monthlyRate)} — Semester (${semesterMonths} mo): $${getAdultProgramTotal(form.program, form.monthlyRate, semesterMonths)}`}</div>}
         </div>
 
         <div className="card" style={{ marginBottom: 22 }}>
@@ -990,14 +1055,14 @@ export default function App() {
         <div style={{ display: isMobile ? "block" : "grid", gridTemplateColumns: "1fr 300px", gap: 18 }}>
           <div>
             {["brothers", "sisters"].map(prog => <div key={prog} className="card" style={{ marginBottom: 14, borderTop: `3px solid ${prog === "brothers" ? "var(--bro)" : "var(--sis)"}` }}><div className="sec">{`${PROGRAMS[prog]} — Levels`}</div><div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }}>{(adultLevels[prog] || []).map((l, i) => <span key={i} className="lt">{l}</span>)}</div><div style={{ fontSize: 12, color: "#888" }}>Adult levels are fixed to Level 1 through Level 5.</div></div>)}
-            {[{ prog: "juniors", tList: juniorTeachers, color: "var(--g)" }, { prog: "brothers", tList: adultTeachers.brothers || [], color: "var(--bro)" }, { prog: "sisters", tList: adultTeachers.sisters || [], color: "var(--sis)" }].map(item => <div key={item.prog} className="card" style={{ marginBottom: 12, borderTop: `3px solid ${item.color}` }}><div className="sec">{`${PROGRAMS[item.prog]} — Teachers`}</div>{!item.tList.length ? <div style={{ color: "#ccc", fontSize: 13 }}>No teachers yet.</div> : <div style={{ overflowX: "auto" }}><table className="tbl" style={{ minWidth: 320 }}><thead><tr><th>Name</th><th>{item.prog === "juniors" ? "Levels" : item.prog === "sisters" ? "Levels / Fee" : "Rate"}</th><th>Students</th><th></th></tr></thead><tbody>{item.tList.map(t => { const cnt = enrollments.filter(e => e.teacherId === t.id && e.active).length; return <tr key={t.id}><td style={{ fontWeight: 600 }}>{t.name}</td><td>{item.prog === "juniors" ? <div style={{ display: "flex", gap: 3 }}>{(t.levels || []).sort((a, b) => a - b).map(li => <span key={li} className="bgg" style={{ fontSize: 10 }}>{JUNIOR_LEVELS[li]}</span>)}</div> : item.prog === "sisters" ? <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>{(t.levels || []).sort((a, b) => a - b).map(li => <span key={li} className="bgg" style={{ fontSize: 10 }}>{adultLevels.sisters[li] || `Level ${li + 1}`}</span>)}<span className="bgry">{getAdultTeacherRateLabel(item.prog, t.monthlyRate)}</span></div> : <span className="bgry">{getAdultTeacherRateLabel(item.prog, t.monthlyRate)}</span>}</td><td><span className="bgry">{cnt}</span></td><td><div style={{ display: "flex", gap: 4 }}><button className="btn bg bsm" onClick={() => { setTeacherForm({ program: item.prog, name: t.name, levels: t.levels || [], monthlyRate: t.monthlyRate || "" }); setEditingTeacherId(t.id); }}>Edit</button><button className="btn bd bsm" onClick={() => deleteTeacher(item.prog, t.id)}>X</button></div></td></tr>; })}</tbody></table></div>}</div>)}
+            {[{ prog: "juniors", tList: juniorTeachers, color: "var(--g)" }, { prog: "brothers", tList: adultTeachers.brothers || [], color: "var(--bro)" }, { prog: "sisters", tList: adultTeachers.sisters || [], color: "var(--sis)" }].map(item => <div key={item.prog} className="card" style={{ marginBottom: 12, borderTop: `3px solid ${item.color}` }}><div className="sec">{`${PROGRAMS[item.prog]} — Teachers`}</div>{!item.tList.length ? <div style={{ color: "#ccc", fontSize: 13 }}>No teachers yet.</div> : <div style={{ overflowX: "auto" }}><table className="tbl" style={{ minWidth: 320 }}><thead><tr><th>Name</th><th>{item.prog === "juniors" ? "Levels" : item.prog === "sisters" ? "Levels / Fee" : "Fee"}</th><th>Students</th><th></th></tr></thead><tbody>{item.tList.map(t => { const cnt = enrollments.filter(e => e.teacherId === t.id && e.active).length; return <tr key={t.id}><td style={{ fontWeight: 600 }}>{t.name}</td><td>{item.prog === "juniors" ? <div style={{ display: "flex", gap: 3 }}>{(t.levels || []).sort((a, b) => a - b).map(li => <span key={li} className="bgg" style={{ fontSize: 10 }}>{JUNIOR_LEVELS[li]}</span>)}</div> : item.prog === "sisters" ? <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>{(t.levels || []).sort((a, b) => a - b).map(li => <span key={li} className="bgg" style={{ fontSize: 10 }}>{adultLevels.sisters[li] || `Level ${li + 1}`}</span>)}<span className="bgry">{getAdultTeacherRateLabel(item.prog, t.monthlyRate)}</span></div> : <span className="bgry">{getAdultTeacherRateLabel(item.prog, t.monthlyRate)}</span>}</td><td><span className="bgry">{cnt}</span></td><td><div style={{ display: "flex", gap: 4 }}><button className="btn bg bsm" onClick={() => { setTeacherForm({ program: item.prog, name: t.name, levels: t.levels || [], monthlyRate: t.monthlyRate || "" }); setEditingTeacherId(t.id); }}>Edit</button><button className="btn bd bsm" onClick={() => deleteTeacher(item.prog, t.id)}>X</button></div></td></tr>; })}</tbody></table></div>}</div>)}
           </div>
           <div className="card" style={{ position: isMobile ? "static" : "sticky", top: 20, marginTop: isMobile ? 14 : 0 }}>
             <div className="sec">{editingTeacherId ? "Edit Teacher" : "Add Teacher"}</div>
             <div className="fg" style={{ marginBottom: 12 }}><label>Program</label><select value={teacherForm.program} onChange={e => setTeacherForm(p => ({ ...p, program: e.target.value, levels: [], monthlyRate: "" }))}>{PROGRAM_KEYS.map(pk => <option key={pk} value={pk}>{PROGRAMS[pk]}</option>)}</select></div>
             <div className="fg" style={{ marginBottom: 12 }}><label>Full Name *</label><input value={teacherForm.name} onChange={e => setTeacherForm(p => ({ ...p, name: e.target.value }))} placeholder="e.g. Ust. Abdullah" /></div>
             {programUsesTeacherLevels(teacherForm.program) && <div style={{ marginBottom: 12 }}><div style={{ fontSize: 11, fontWeight: 700, color: "#888", textTransform: "uppercase", marginBottom: 7 }}>Assign Levels *</div><div style={{ display: "flex", gap: 7 }}>{(teacherForm.program === "juniors" ? JUNIOR_LEVELS : adultLevels.sisters).map((l, i) => <div key={i} className={`lchip${teacherForm.levels.includes(i) ? " on" : ""}`} onClick={() => setTeacherForm(p => ({ ...p, levels: p.levels.includes(i) ? p.levels.filter(x => x !== i) : [...p.levels, i] }))} title={l}>{i + 1}</div>)}</div></div>}
-            {teacherForm.program !== "juniors" && <div className="fg" style={{ marginBottom: 12 }}><label>{teacherForm.program === "sisters" ? "Fixed Fee ($) *" : "Monthly Rate ($) *"}</label><input type="number" value={teacherForm.monthlyRate} onChange={e => setTeacherForm(p => ({ ...p, monthlyRate: e.target.value }))} placeholder={teacherForm.program === "sisters" ? "e.g. 250" : "e.g. 50 or 100"} /></div>}
+            {teacherForm.program !== "juniors" && <div className="fg" style={{ marginBottom: 12 }}><label>{isFixedAdultPriceProgram(teacherForm.program) ? "Fixed Fee ($) *" : "Monthly Rate ($) *"}</label><input type="number" value={teacherForm.monthlyRate} onChange={e => setTeacherForm(p => ({ ...p, monthlyRate: e.target.value }))} placeholder={isFixedAdultPriceProgram(teacherForm.program) ? "e.g. 250" : "e.g. 50 or 100"} /></div>}
             {teacherMsg && <div style={{ fontSize: 13, color: "var(--g)", background: "#f0faf4", padding: "7px 12px", borderRadius: 8, marginBottom: 10, fontWeight: 600 }}>{teacherMsg}</div>}
             <div style={{ display: "flex", gap: 7 }}><button className="btn bp" onClick={saveTeacher}>{editingTeacherId ? "Save" : "Add Teacher"}</button>{editingTeacherId && <button className="btn bg" onClick={() => { setTeacherForm({ program: "juniors", name: "", levels: [], monthlyRate: "" }); setEditingTeacherId(null); setTeacherMsg(""); }}>Cancel</button>}</div>
           </div>
