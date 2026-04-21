@@ -103,10 +103,18 @@ const NAV_ITEMS = [
   { id: "mailing", icon: "📧", label: "Mailing" },
   { id: "settings", icon: "⚙️", label: "Settings" },
 ];
+const PAYMENT_FILTER_OPTIONS = [
+  { value: "full", label: "Paid in Full" },
+  { value: "partial", label: "Partially Paid" },
+  { value: "instalment", label: "Instalments" },
+  { value: "discounted", label: "Discounted" },
+  { value: "waived", label: "Waived" },
+];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function getJuniorBaseRate(n) { if (n === 1) return 210; if (n === 2) return 190; if (n === 3) return 170; return 150; }
 function roundMoney(v) { return Math.round((Number(v) || 0) * 100) / 100; }
+function getPaymentTypeLabel(paymentType) { return paymentType === "full" ? "Paid Full" : paymentType === "partial" ? "Partially Paid" : paymentType === "instalment" ? "Instalment" : paymentType === "discounted" ? "Discounted" : "Waived"; }
 function isFixedAdultPriceProgram(program) { return program === "brothers" || program === "sisters"; }
 function getAdultProgramTotal(program, rate, semMonths) {
   const normalizedRate = roundMoney(rate);
@@ -163,7 +171,7 @@ function getEnrollmentPaymentTarget(e) {
   if (e.paymentType === "discounted") return roundMoney(e.discountedAmount || e.semesterTotal || 0);
   return roundMoney(e.semesterTotal || 0);
 }
-function calcFamilyBilling(family, persons, enrollments, semMonths) {
+function calcFamilyBilling(family, persons, enrollments) {
   const memberIds = family.personIds || [];
   const active = enrollments.filter(e => memberIds.includes(e.personId) && e.active);
   const juniors = active.filter(e => e.program === "juniors");
@@ -292,22 +300,22 @@ function LoginScreen() {
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 function AddressInput({ value, onChange }) {
-  const [raw, setRaw] = useState((value && value.street) || ""); const [hits, setHits] = useState([]); const [loading, setLoading] = useState(false); const timer = useRef(null); const abort = useRef(null); const lastQuery = useRef("");
-  function search(q) { if (!q || q.length < 3) { setHits([]); return; } lastQuery.current = q; if (abort.current) { try { abort.current.abort(); } catch { } } abort.current = new AbortController(); setLoading(true); fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=6&bbox=-141,41.7,-52.6,83.1&lang=en`, { signal: abort.current.signal }).then(r => r.json()).then(data => { setHits((data.features || []).filter(f => f.properties && f.properties.countrycode === "CA")); setLoading(false); }).catch(e => { if (e.name !== "AbortError") setHits([]); setLoading(false); }); }
-  function pick(h) { const p = h.properties || {}; const road = p.street || p.name || ""; let hn = p.housenumber || ""; if (!hn) { const m = lastQuery.current.match(/^(\d+[A-Za-z]?)\s/); if (m) hn = m[1]; } const sf = [hn, road].filter(Boolean).join(" ") || lastQuery.current.split(",")[0].trim(); setRaw(sf); setHits([]); onChange({ street: sf, city: p.city || p.town || p.village || p.hamlet || p.municipality || p.county || "", province: p.state || "", postal: (p.postcode || "").toUpperCase() }); }
+  const [raw, setRaw] = useState((value && value.street) || ""); const [hits, setHits] = useState([]); const [loading, setLoading] = useState(false); const [lastQuery, setLastQuery] = useState(""); const timer = useRef(null); const abort = useRef(null);
+  function search(q) { if (!q || q.length < 3) { setHits([]); return; } setLastQuery(q); if (abort.current) { try { abort.current.abort(); } catch { return; } } abort.current = new AbortController(); setLoading(true); fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=6&bbox=-141,41.7,-52.6,83.1&lang=en`, { signal: abort.current.signal }).then(r => r.json()).then(data => { setHits((data.features || []).filter(f => f.properties && f.properties.countrycode === "CA")); setLoading(false); }).catch(e => { if (e.name !== "AbortError") setHits([]); setLoading(false); }); }
+  function pick(h) { const p = h.properties || {}; const road = p.street || p.name || ""; let hn = p.housenumber || ""; if (!hn) { const m = lastQuery.match(/^(\d+[A-Za-z]?)\s/); if (m) hn = m[1]; } const sf = [hn, road].filter(Boolean).join(" ") || lastQuery.split(",")[0].trim(); setRaw(sf); setHits([]); onChange({ street: sf, city: p.city || p.town || p.village || p.hamlet || p.municipality || p.county || "", province: p.state || "", postal: (p.postcode || "").toUpperCase() }); }
   return (
     <div style={{ position: "relative" }}>
       <div style={{ position: "relative" }}>
         <input value={raw} onChange={e => { const v = e.target.value; setRaw(v); onChange({ ...(value || {}), street: v }); clearTimeout(timer.current); timer.current = setTimeout(() => search(v), 420); }} onBlur={() => setTimeout(() => setHits([]), 180)} placeholder="e.g. 123 Main Street, Ottawa" style={{ width: "100%", padding: "10px 13px", border: "1.5px solid #ddd", borderRadius: 8, fontSize: 15, fontFamily: "inherit", background: "#fafafa", color: "#1a1a1a" }} />
         {loading && <span style={{ position: "absolute", right: 11, top: "50%", transform: "translateY(-50%)", fontSize: 12, color: "#aaa" }}>...</span>}
       </div>
-      {hits.length > 0 && <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1.5px solid #1a6b3a", borderTop: "none", borderRadius: "0 0 10px 10px", zIndex: 400, maxHeight: 260, overflowY: "auto", boxShadow: "0 8px 28px rgba(0,0,0,0.13)" }}>{hits.map((h, i) => { const p = h.properties || {}; const road = p.street || p.name || ""; let hn = p.housenumber || ""; if (!hn) { const m = lastQuery.current.match(/^(\d+[A-Za-z]?)\s/); if (m) hn = m[1]; } const sl = [hn, road].filter(Boolean).join(" ") || road || "-"; const cl = [p.city || p.town || p.village, p.state, p.postcode].filter(Boolean).join(", "); return <div key={i} onMouseDown={e => { e.preventDefault(); pick(h); }} style={{ padding: "9px 14px", fontSize: 13, cursor: "pointer", borderBottom: "1px solid #f0ede6" }} onMouseEnter={e => e.currentTarget.style.background = "#f0faf4"} onMouseLeave={e => e.currentTarget.style.background = "#fff"}><div style={{ fontWeight: 600 }}>{sl}</div><div style={{ color: "#999", fontSize: 12 }}>{cl}</div></div>; })}</div>}
+      {hits.length > 0 && <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1.5px solid #1a6b3a", borderTop: "none", borderRadius: "0 0 10px 10px", zIndex: 400, maxHeight: 260, overflowY: "auto", boxShadow: "0 8px 28px rgba(0,0,0,0.13)" }}>{hits.map((h, i) => { const p = h.properties || {}; const road = p.street || p.name || ""; let hn = p.housenumber || ""; if (!hn) { const m = lastQuery.match(/^(\d+[A-Za-z]?)\s/); if (m) hn = m[1]; } const sl = [hn, road].filter(Boolean).join(" ") || road || "-"; const cl = [p.city || p.town || p.village, p.state, p.postcode].filter(Boolean).join(", "); return <div key={i} onMouseDown={e => { e.preventDefault(); pick(h); }} style={{ padding: "9px 14px", fontSize: 13, cursor: "pointer", borderBottom: "1px solid #f0ede6" }} onMouseEnter={e => e.currentTarget.style.background = "#f0faf4"} onMouseLeave={e => e.currentTarget.style.background = "#fff"}><div style={{ fontWeight: 600 }}>{sl}</div><div style={{ color: "#999", fontSize: 12 }}>{cl}</div></div>; })}</div>}
     </div>
   );
 }
 function PhoneInput({ value, onChange, placeholder }) { const [err, setErr] = useState(""); return <div><input value={fmtPhone(value)} onChange={e => { const c = cleanPhone(e.target.value); onChange(c); setErr(c && c.length < 10 ? "Must be 10 digits" : ""); }} placeholder={placeholder || "(613) 000-0000"} style={{ width: "100%", padding: "10px 13px", border: `1.5px solid ${err ? "#e74c3c" : "#ddd"}`, borderRadius: 8, fontSize: 15, fontFamily: "inherit", background: "#fafafa", color: "#1a1a1a" }} />{err && <div style={{ fontSize: 11, color: "#e74c3c", marginTop: 2 }}>{err}</div>}</div>; }
 function EmailInput({ value, onChange, placeholder }) { const [err, setErr] = useState(""); return <div><input value={value} type="email" onChange={e => { onChange(e.target.value); setErr(e.target.value && !validEmail(e.target.value) ? "Invalid email" : ""); }} placeholder={placeholder || "email@example.com"} style={{ width: "100%", padding: "10px 13px", border: `1.5px solid ${err ? "#e74c3c" : "#ddd"}`, borderRadius: 8, fontSize: 15, fontFamily: "inherit", background: "#fafafa", color: "#1a1a1a" }} />{err && <div style={{ fontSize: 11, color: "#e74c3c", marginTop: 2 }}>{err}</div>}</div>; }
-function MoneyInput({ value, onChange, placeholder, autoFocus = false }) { return <input type="text" inputMode="decimal" value={value} onChange={e => onChange(sanitizeMoneyInput(e.target.value))} placeholder={placeholder} autoFocus={autoFocus} style={{ width: "100%", padding: "10px 13px", border: "1.5px solid #ddd", borderRadius: 8, fontSize: 15, fontFamily: "inherit", background: "#fafafa", color: "#1a1a1a" }} />; }
+function MoneyInput({ value, onChange, placeholder, autoFocus = false, disabled = false }) { return <input type="text" inputMode="decimal" value={value} onChange={e => onChange(sanitizeMoneyInput(e.target.value))} placeholder={placeholder} autoFocus={autoFocus} disabled={disabled} style={{ width: "100%", padding: "10px 13px", border: "1.5px solid #ddd", borderRadius: 8, fontSize: 15, fontFamily: "inherit", background: disabled ? "#f2f2f2" : "#fafafa", color: disabled ? "#888" : "#1a1a1a" }} />; }
 
 function ReceiptView({ person, enrollment, payment, receiptNum, semesterLabel, onClose }) {
   const bal = enrollBalance(enrollment); const isCredit = bal < 0;
@@ -316,7 +324,7 @@ function ReceiptView({ person, enrollment, payment, receiptNum, semesterLabel, o
     const rn = person && person.age >= 18 ? `${person.firstName} ${person.lastName}` : (person && person.parent1First ? `${person.parent1First} ${person.parent1Last || ""}` : "Parent");
     const subject = `Tarteel Receipt #${receiptNum} - ${person ? `${person.firstName} ${person.lastName}` : ""}`;
     const body = [`Dear ${rn},`, "", "Please find your payment receipt below.", "", SCHOOL_NAME, SCHOOL_ADDRESS, "", `Receipt #${receiptNum}`, `Issued: ${fmtDate(today())}`, "", `Student #: ${(person && person.studentNum) || "-"}`, `Student: ${person ? `${person.firstName} ${person.lastName}` : "-"}`, person && person.dateOfBirth ? `Date of Birth: ${fmtDob(person.dateOfBirth)}` : "", `Program: ${PROGRAMS[enrollment.program] || ""}`, `Teacher: ${enrollment.teacherName || "-"}`, `Semester: ${semesterLabel}`, `Payment Date: ${fmtDate(payment && payment.date)}`, `Method: ${(payment && payment.method) || "-"}`, `Amount Paid: $${Number((payment && payment.amount) || 0).toFixed(2)}`, (payment && payment.note) ? `Note: ${payment.note}` : "", "", `Semester Total: $${(enrollment.semesterTotal || 0).toFixed(2)}`, `Balance: $${Math.abs(bal).toFixed(2)}${isCredit ? " (credit)" : ""}`, "", SCHOOL_NAME, SCHOOL_ADDRESS, "tarteel.ca", "", "Jazakum Allahu Khairan"].filter(l => l !== undefined).join("\n");
-    window.location.href = `mailto:${re}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    window.location.assign(`mailto:${re}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`);
   }
   const rows = [["Student #", (person && person.studentNum) || "-"], ["Student", person ? `${person.firstName} ${person.lastName}` : "-"]];
   if (person && person.dateOfBirth) rows.push(["Date of Birth", fmtDob(person.dateOfBirth)]);
@@ -400,6 +408,7 @@ export default function App() {
   const [lookupLevelFilter, setLookupLevelFilter] = useState("");
   const [lookupGenderFilter, setLookupGenderFilter] = useState("");
   const [lookupTeacherFilter, setLookupTeacherFilter] = useState("");
+  const [lookupPaymentFilter, setLookupPaymentFilter] = useState("");
   const [lookupResults, setLookupResults] = useState([]);
   const videoRef = useRef(null); const streamRef = useRef(null);
 
@@ -419,7 +428,7 @@ export default function App() {
           setJuniorTeachers(ts.juniors);
           setAdultTeachers({ ...ts.adults, brothers: applyBrothersRateOverrides(ts.adults.brothers || []) });
         }
-      } catch (err) { setDbError("Could not connect to database. Check your Supabase credentials."); }
+      } catch { setDbError("Could not connect to database. Check your Supabase credentials."); }
       setLoading(false);
     }
     loadData();
@@ -486,41 +495,44 @@ export default function App() {
 
   function getEnrollmentLookupLevelValue(e) { if (!e) return ""; if (e.program === "juniors") return `juniors:${e.level}`; return `${e.program}:${normalizeAdultLevelLabel(e.levelName || e.level) || ""}`; }
   function getEnrollmentLookupLabel(e) { return `${PROGRAMS[e.program]} · ${getEnrollmentLevelLabel(e)}${e.teacherName ? ` · ${e.teacherName}` : ""}`; }
-  function runLookup(query, pf, lf, gf, tf) {
+  function runLookup(query, pf, lf, gf, tf, payf) {
     const ql = (query || "").toLowerCase().replace(/[\s\-(). ]/g, "");
-    if (!ql && !pf && !lf && !gf && !tf) { setLookupResults([]); return; }
+    if (!ql && !pf && !lf && !gf && !tf && !payf) { setLookupResults([]); return; }
     setLookupResults(persons.filter(p => {
       const pes = enrollments.filter(e => e.personId === p.id && e.active);
       if (pf && !pes.some(e => e.program === pf)) return false;
       if (lf && !pes.some(e => getEnrollmentLookupLevelValue(e) === lf)) return false;
       if (gf && p.gender !== gf) return false;
       if (tf && !pes.some(e => e.teacherId === tf)) return false;
+      if (payf && !pes.some(e => e.paymentType === payf)) return false;
       if (!ql) return true;
-      const fields = [p.phone, p.email, p.parent1Phone, p.parent1Email, p.parent2Phone, p.parent2Email, p.firstName + p.lastName, p.parent1First + p.parent1Last, p.parent2First + p.parent2Last].map(x => (x || "").toLowerCase().replace(/[\s\-(). ]/g, ""));
+      const paymentFields = pes.flatMap(e => [e.paymentType, getPaymentTypeLabel(e.paymentType)]);
+      const fields = [p.phone, p.email, p.parent1Phone, p.parent1Email, p.parent2Phone, p.parent2Email, p.firstName + p.lastName, p.parent1First + p.parent1Last, p.parent2First + p.parent2Last, ...paymentFields].map(x => (x || "").toLowerCase().replace(/[\s\-(). ]/g, ""));
       return fields.some(fd => fd.includes(ql));
     }));
   }
-  function handleLookup(q) { setLookupQuery(q); runLookup(q, lookupProgramFilter, lookupLevelFilter, lookupGenderFilter, lookupTeacherFilter); }
-  function handleLookupProgramFilter(pf) { setLookupProgramFilter(pf); const nl = pf === lookupProgramFilter ? lookupLevelFilter : ""; const nt = pf === lookupProgramFilter ? lookupTeacherFilter : ""; if (pf !== lookupProgramFilter) { setLookupLevelFilter(""); setLookupTeacherFilter(""); } runLookup(lookupQuery, pf, nl, lookupGenderFilter, nt); }
-  function handleLookupLevelFilter(lf) { setLookupLevelFilter(lf); runLookup(lookupQuery, lookupProgramFilter, lf, lookupGenderFilter, lookupTeacherFilter); }
-  function handleLookupGenderFilter(gf) { setLookupGenderFilter(gf); runLookup(lookupQuery, lookupProgramFilter, lookupLevelFilter, gf, lookupTeacherFilter); }
-  function handleLookupTeacherFilter(tf) { setLookupTeacherFilter(tf); runLookup(lookupQuery, lookupProgramFilter, lookupLevelFilter, lookupGenderFilter, tf); }
+  function handleLookup(q) { setLookupQuery(q); runLookup(q, lookupProgramFilter, lookupLevelFilter, lookupGenderFilter, lookupTeacherFilter, lookupPaymentFilter); }
+  function handleLookupProgramFilter(pf) { setLookupProgramFilter(pf); const nl = pf === lookupProgramFilter ? lookupLevelFilter : ""; const nt = pf === lookupProgramFilter ? lookupTeacherFilter : ""; if (pf !== lookupProgramFilter) { setLookupLevelFilter(""); setLookupTeacherFilter(""); } runLookup(lookupQuery, pf, nl, lookupGenderFilter, nt, lookupPaymentFilter); }
+  function handleLookupLevelFilter(lf) { setLookupLevelFilter(lf); runLookup(lookupQuery, lookupProgramFilter, lf, lookupGenderFilter, lookupTeacherFilter, lookupPaymentFilter); }
+  function handleLookupGenderFilter(gf) { setLookupGenderFilter(gf); runLookup(lookupQuery, lookupProgramFilter, lookupLevelFilter, gf, lookupTeacherFilter, lookupPaymentFilter); }
+  function handleLookupTeacherFilter(tf) { setLookupTeacherFilter(tf); runLookup(lookupQuery, lookupProgramFilter, lookupLevelFilter, lookupGenderFilter, tf, lookupPaymentFilter); }
+  function handleLookupPaymentFilter(payf) { setLookupPaymentFilter(payf); runLookup(lookupQuery, lookupProgramFilter, lookupLevelFilter, lookupGenderFilter, lookupTeacherFilter, payf); }
 
   function printLookupResults() {
     const popup = window.open("", "_blank", "width=960,height=1200"); if (!popup) { alert("Please allow pop-ups to print."); return; }
-    const filters = [lookupQuery ? `Search: ${lookupQuery}` : null, lookupProgramFilter ? `Program: ${PROGRAMS[lookupProgramFilter]}` : null, lookupGenderFilter ? `Gender: ${lookupGenderFilter}` : null].filter(Boolean);
+    const filters = [lookupQuery ? `Search: ${lookupQuery}` : null, lookupProgramFilter ? `Program: ${PROGRAMS[lookupProgramFilter]}` : null, lookupGenderFilter ? `Gender: ${lookupGenderFilter}` : null, lookupPaymentFilter ? `Payment: ${getPaymentTypeLabel(lookupPaymentFilter)}` : null].filter(Boolean);
     const cards = lookupResults.map(person => {
       const pes = enrollments.filter(e => e.personId === person.id && e.active);
       return `<section class="card"><div class="title">${escapeHtml(`${person.firstName} ${person.lastName}`)} <span class="student-num">${escapeHtml(person.studentNum || "-")}</span></div><div class="meta">${escapeHtml(`${person.gender || "-"} · Age ${person.age || "-"}${person.dateOfBirth ? " · DOB: " + fmtDob(person.dateOfBirth) : ""}`)}</div><div class="meta">${escapeHtml(person.phone ? fmtPhone(person.phone) : "")}</div><div class="meta">${escapeHtml(person.email || "")}</div>${(person.parent1Phone || person.parent1Email) ? `<div class="meta">${escapeHtml(`${[person.parent1First, person.parent1Last].filter(Boolean).join(" ")}${person.parent1Phone ? ` · ${fmtPhone(person.parent1Phone)}` : ""}${person.parent1Email ? ` · ${person.parent1Email}` : ""}`)}</div>` : ""}<div class="enrollments">${pes.map(e => `<div class="tag">${escapeHtml(getEnrollmentLookupLabel(e))}</div>`).join("")}</div></section>`;
     }).join("");
-    popup.document.write(`<!doctype html><html><head><title>Lookup Results</title><meta charset="utf-8"/><style>body{font-family:Arial,sans-serif;margin:32px;color:#222}h1{margin:0 0 6px;font-size:28px}.sub{color:#666;margin-bottom:18px}.filters{margin:0 0 22px;padding:12px 14px;background:#f7f5ef;border-radius:10px;font-size:14px}.count{font-weight:700;margin-bottom:18px}.card{border:1px solid #ddd;border-radius:12px;padding:16px;margin-bottom:12px;break-inside:avoid}.title{font-size:18px;font-weight:700;margin-bottom:6px}.student-num{font-size:12px;font-weight:700;color:#666;margin-left:8px}.meta{font-size:13px;color:#666;margin-bottom:4px}.enrollments{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px}.tag{font-size:12px;padding:4px 8px;background:#eef6f1;border-radius:999px;color:#1a6b3a}@media print{body{margin:20px}}</style></head><body><h1>Lookup Results</h1><div class="sub">${escapeHtml(fmtDate(today()))}</div><div class="filters">${escapeHtml(filters.length ? filters.join(" | ") : "No filters applied")}</div><div class="count">${lookupResults.length} ${lookupResults.length === 1 ? "student" : "students"} found</div>${cards || "<div>No results.</div>"}<script>window.onload=()=>window.print();<\/script></body></html>`);
+    popup.document.write(`<!doctype html><html><head><title>Lookup Results</title><meta charset="utf-8"/><style>body{font-family:Arial,sans-serif;margin:32px;color:#222}h1{margin:0 0 6px;font-size:28px}.sub{color:#666;margin-bottom:18px}.filters{margin:0 0 22px;padding:12px 14px;background:#f7f5ef;border-radius:10px;font-size:14px}.count{font-weight:700;margin-bottom:18px}.card{border:1px solid #ddd;border-radius:12px;padding:16px;margin-bottom:12px;break-inside:avoid}.title{font-size:18px;font-weight:700;margin-bottom:6px}.student-num{font-size:12px;font-weight:700;color:#666;margin-left:8px}.meta{font-size:13px;color:#666;margin-bottom:4px}.enrollments{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px}.tag{font-size:12px;padding:4px 8px;background:#eef6f1;border-radius:999px;color:#1a6b3a}@media print{body{margin:20px}}</style></head><body><h1>Lookup Results</h1><div class="sub">${escapeHtml(fmtDate(today()))}</div><div class="filters">${escapeHtml(filters.length ? filters.join(" | ") : "No filters applied")}</div><div class="count">${lookupResults.length} ${lookupResults.length === 1 ? "student" : "students"} found</div>${cards || "<div>No results.</div>"}<script>window.onload=()=>window.print();</scr` + `ipt></body></html>`);
     popup.document.close();
   }
 
   function openEditEnrollment(enrollment) {
     const person = persons.find(p => p.id === enrollment.personId); if (!person) return;
     const firstPayment = (enrollment.paymentHistory || [])[0];
-    setForm({ ...INIT_FORM, mode: "existing", editingEnrollId: enrollment.id, linkedPersonId: person.id, firstName: person.firstName, lastName: person.lastName, age: String(person.age), dateOfBirth: person.dateOfBirth || "", gender: person.gender || "", phone: person.phone || "", email: person.email || "", address: person.address || { street: "", city: "", province: "", postal: "" }, notes: person.notes || "", parent1First: person.parent1First || "", parent1Last: person.parent1Last || "", parent1Phone: person.parent1Phone || "", parent1Email: person.parent1Email || "", parent2First: person.parent2First || "", parent2Last: person.parent2Last || "", parent2Phone: person.parent2Phone || "", parent2Email: person.parent2Email || "", twoParents: person.twoParents || "yes", mainContact: person.mainContact || "parent1", emergencyFirst: person.emergencyFirst || "", emergencyLast: person.emergencyLast || "", emergencyPhone: person.emergencyPhone || "", emergencyRelationship: person.emergencyRelationship || "", hasAllergy: person.hasAllergy === true ? "yes" : person.hasAllergy === false ? "no" : "", allergyNote: person.allergyNote || "", photo: person.photo || null, program: enrollment.program, level: enrollment.program === "juniors" ? String(enrollment.level != null ? enrollment.level : "") : normalizeAdultLevelLabel(enrollment.levelName || enrollment.level), levelName: enrollment.program === "juniors" ? (enrollment.levelName || "") : normalizeAdultLevelLabel(enrollment.levelName || enrollment.level), teacherId: enrollment.teacherId, teacherName: enrollment.teacherName, monthlyRate: enrollment.monthlyRate || 0, paymentType: enrollment.paymentType, paymentMethod: enrollment.paymentMethod || firstPayment?.method || "Cash", waiverType: enrollment.waiverType || "Scholarship", discountedAmount: enrollment.discountedAmount ? String(enrollment.discountedAmount) : "", instalmentMethod: firstPayment?.method || "Cash" });
+    setForm({ ...INIT_FORM, mode: "existing", editingEnrollId: enrollment.id, linkedPersonId: person.id, firstName: person.firstName, lastName: person.lastName, age: String(person.age), dateOfBirth: person.dateOfBirth || "", gender: person.gender || "", phone: person.phone || "", email: person.email || "", address: person.address || { street: "", city: "", province: "", postal: "" }, notes: person.notes || "", parent1First: person.parent1First || "", parent1Last: person.parent1Last || "", parent1Phone: person.parent1Phone || "", parent1Email: person.parent1Email || "", parent2First: person.parent2First || "", parent2Last: person.parent2Last || "", parent2Phone: person.parent2Phone || "", parent2Email: person.parent2Email || "", twoParents: person.twoParents || "yes", mainContact: person.mainContact || "parent1", emergencyFirst: person.emergencyFirst || "", emergencyLast: person.emergencyLast || "", emergencyPhone: person.emergencyPhone || "", emergencyRelationship: person.emergencyRelationship || "", hasAllergy: person.hasAllergy === true ? "yes" : person.hasAllergy === false ? "no" : "", allergyNote: person.allergyNote || "", photo: person.photo || null, program: enrollment.program, level: enrollment.program === "juniors" ? String(enrollment.level != null ? enrollment.level : "") : normalizeAdultLevelLabel(enrollment.levelName || enrollment.level), levelName: enrollment.program === "juniors" ? (enrollment.levelName || "") : normalizeAdultLevelLabel(enrollment.levelName || enrollment.level), teacherId: enrollment.teacherId, teacherName: enrollment.teacherName, monthlyRate: enrollment.monthlyRate || 0, paymentType: enrollment.paymentType, paymentMethod: enrollment.paymentMethod || firstPayment?.method || "Cash", paymentDate: firstPayment?.date || today(), paymentNote: firstPayment?.note || "", waiverType: enrollment.waiverType || "Scholarship", discountedAmount: enrollment.discountedAmount ? String(enrollment.discountedAmount) : "", instalmentPaid: String(getRecordedPaidAmount(enrollment) || ""), instalmentMethod: firstPayment?.method || "Cash", instalmentDate: firstPayment?.date || today() });
     setView("enroll");
   }
   function startCamera() { navigator.mediaDevices.getUserMedia({ video: true }).then(s => { streamRef.current = s; if (videoRef.current) videoRef.current.srcObject = s; setCameraActive(true); }).catch(() => alert("Camera unavailable.")); }
@@ -540,7 +552,40 @@ export default function App() {
     if (isMinor) { if (!form.parent1First || !form.parent1Last) return "Parent 1 name is required."; if (!form.parent1Phone && !form.parent1Email) return "Parent 1 phone or email is required."; if (form.parent1Phone && form.parent1Phone.length < 10) return "Parent 1 phone must be 10 digits."; if (form.twoParents === "no" && (!form.emergencyFirst || !form.emergencyLast)) return "Emergency contact name required."; }
     if (!form.teacherId) return "Please select a teacher.";
     if (isJunior && form.level === "") return "Please select a level.";
+    if (form.paymentType === "discounted" && roundMoney(parseFloat(form.discountedAmount) || 0) <= 0) return "Please enter a discounted amount.";
     return null;
+  }
+
+  function buildEnrollmentPaymentValues(program, rate, existingPaymentHistory = []) {
+    const normalizedRate = roundMoney(rate || 0);
+    const discountedAmount = roundMoney(parseFloat(form.discountedAmount) || 0);
+    const baseSemesterTotal = program === "juniors" ? getJuniorBaseRate(1) : getAdultProgramTotal(program, normalizedRate, semesterMonths);
+    const semesterTotal = form.paymentType === "discounted" ? discountedAmount : baseSemesterTotal;
+    const hasMultipleRecordedPayments = existingPaymentHistory.length > 1;
+    let paymentMethod = form.paymentMethod;
+    let paymentHistory = [];
+
+    if (form.paymentType === "full") {
+      paymentHistory = [{ id: existingPaymentHistory[0]?.id || uid(), date: form.paymentDate, amount: semesterTotal, method: form.paymentMethod, note: form.paymentNote || "Paid in Full", type: "full" }];
+    } else if (form.paymentType === "discounted") {
+      paymentHistory = [{ id: existingPaymentHistory[0]?.id || uid(), date: form.paymentDate, amount: discountedAmount, method: form.paymentMethod, note: form.paymentNote || "Discounted total paid", type: "discounted" }];
+    } else if (form.paymentType === "waived") {
+      paymentMethod = "-";
+      paymentHistory = [{ id: existingPaymentHistory[0]?.id || uid(), date: form.paymentDate, amount: 0, method: "-", note: form.paymentNote || `Waived — ${form.waiverType}`, type: "waived" }];
+    } else if (hasMultipleRecordedPayments) {
+      paymentMethod = form.instalmentMethod;
+      paymentHistory = existingPaymentHistory.map(h => ({ ...h, method: form.instalmentMethod, type: form.paymentType }));
+    } else {
+      const amount = roundMoney(parseFloat(form.instalmentPaid) || 0);
+      paymentMethod = form.instalmentMethod;
+      paymentHistory = amount > 0 ? [{ id: existingPaymentHistory[0]?.id || uid(), date: form.instalmentDate, amount, method: form.instalmentMethod, note: form.paymentNote || (form.paymentType === "partial" ? "Partial payment" : "Initial instalment"), type: form.paymentType }] : [];
+    }
+
+    const amountPaid = (form.paymentType === "full" || form.paymentType === "waived" || form.paymentType === "discounted")
+      ? semesterTotal
+      : roundMoney(paymentHistory.reduce((sum, payment) => sum + (payment.amount || 0), 0));
+
+    return { semesterTotal, amountPaid, paymentMethod, paymentHistory, discountedAmount };
   }
 
   async function submitEnrollment() {
@@ -569,18 +614,8 @@ export default function App() {
         const updatedEnroll = enrollments.find(e => e.id === form.editingEnrollId);
         if (updatedEnroll) {
           const updatedRate = form.monthlyRate || 0;
-          const updatedSemesterTotal = updatedEnroll.program === "juniors"
-            ? updatedEnroll.semesterTotal
-            : updatedEnroll.paymentType === "discounted"
-              ? roundMoney(updatedEnroll.discountedAmount || getAdultProgramTotal(updatedEnroll.program, updatedRate, semesterMonths))
-              : getAdultProgramTotal(updatedEnroll.program, updatedRate, semesterMonths);
-          let paymentHistory = updatedEnroll.paymentHistory || []; let paymentMethod = updatedEnroll.paymentMethod;
-          if (updatedEnroll.paymentType === "full" || updatedEnroll.paymentType === "discounted") { paymentMethod = form.paymentMethod; paymentHistory = paymentHistory.map((h, i) => i === 0 ? { ...h, method: form.paymentMethod, amount: updatedSemesterTotal } : h); }
-          else if ((updatedEnroll.paymentType === "instalment" || updatedEnroll.paymentType === "partial") && paymentHistory.length <= 1) { paymentMethod = form.instalmentMethod; paymentHistory = paymentHistory.map((h, i) => i === 0 ? { ...h, method: form.instalmentMethod } : h); }
-          const updatedAmountPaid = updatedEnroll.program !== "juniors" && (updatedEnroll.paymentType === "full" || updatedEnroll.paymentType === "waived" || updatedEnroll.paymentType === "discounted")
-            ? updatedSemesterTotal
-            : updatedEnroll.amountPaid;
-          const newE = { ...updatedEnroll, teacherId: form.teacherId, teacherName: form.teacherName, level: form.level, levelName: form.levelName, monthlyRate: updatedRate, semesterTotal: updatedSemesterTotal, amountPaid: updatedAmountPaid, paymentMethod, paymentHistory };
+          const paymentValues = buildEnrollmentPaymentValues(updatedEnroll.program, updatedRate, updatedEnroll.paymentHistory || []);
+          const newE = { ...updatedEnroll, teacherId: form.teacherId, teacherName: form.teacherName, level: form.level, levelName: form.levelName, monthlyRate: updatedRate, semesterTotal: paymentValues.semesterTotal, amountPaid: paymentValues.amountPaid, paymentType: form.paymentType, paymentMethod: paymentValues.paymentMethod, waiverType: form.waiverType, discountedAmount: paymentValues.discountedAmount, paymentHistory: paymentValues.paymentHistory };
           const { error: eErr } = await supabase.from("enrollments").upsert(mapEnrollmentToDb(newE));
           if (eErr) throw eErr;
           setEnrollments(prev => prev.map(e => e.id === form.editingEnrollId ? newE : e));
@@ -737,7 +772,7 @@ export default function App() {
   `;
 
   const ppill = prog => prog === "juniors" ? "pj" : prog === "brothers" ? "pb" : "ps";
-  const ptypeLabel = pt => pt === "full" ? "Paid Full" : pt === "partial" ? "Partially Paid" : pt === "instalment" ? "Instalment" : pt === "discounted" ? "Discounted" : "Waived";
+  const ptypeLabel = pt => getPaymentTypeLabel(pt);
 
   const SavingBanner = () => saving ? <div style={{ position: "fixed", bottom: isMobile ? 60 : 16, right: 16, background: "#1a6b3a", color: "#fff", padding: "8px 18px", borderRadius: 20, fontSize: 13, fontWeight: 600, zIndex: 2000, boxShadow: "0 4px 16px rgba(0,0,0,0.18)", display: "flex", alignItems: "center", gap: 8 }}><span style={{ width: 10, height: 10, borderRadius: "50%", background: "#fff", opacity: 0.7, display: "inline-block" }} />Saving...</div> : null;
   const LogoutBtn = () => <div onClick={handleLogout} style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 7, padding: "8px 12px", borderRadius: 8, color: "#e74c3c", fontSize: 13, fontWeight: 600 }} onMouseEnter={e => e.currentTarget.style.background = "#fdecea"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}><span>🚪</span> Sign Out</div>;
@@ -789,7 +824,7 @@ export default function App() {
           <div className="card" style={{ overflowX: "auto" }}>
             <div className="sec">{`${PROGRAMS[activeProg]} — ${progEnrollments(activeProg).length} students`}</div>
             <table className="tbl" style={{ minWidth: isMobile ? 500 : "auto" }}>
-              <thead><tr><th>#</th><th>Name</th><th>G</th><th>Age</th><th>DOB</th><th>Level</th><th>Payment</th><th>Bal.</th><th></th></tr></thead>
+              <thead><tr><th>#</th><th>Name</th><th>G</th><th>Age</th><th>DOB</th><th>Level / Teacher</th><th>Payment</th><th>Bal.</th><th></th></tr></thead>
               <tbody>
                 {progEnrollments(activeProg).map(e => {
                   const person = persons.find(p => p.id === e.personId); if (!person) return null;
@@ -801,7 +836,7 @@ export default function App() {
                       <td style={{ fontSize: 11 }}>{person.gender === "Female" ? "F" : "M"}</td>
                       <td>{person.age}</td>
                       <td style={{ fontSize: 11, color: "#888", whiteSpace: "nowrap" }}>{person.dateOfBirth ? fmtDob(person.dateOfBirth) : <span style={{ color: "#ccc" }}>—</span>}</td>
-                      <td style={{ fontSize: 12 }}>{getEnrollmentLevelLabel(e)}</td>
+                      <td style={{ fontSize: 12 }}><div>{getEnrollmentLevelLabel(e)}</div><div style={{ fontSize: 10, color: "#888" }}>{e.teacherName || "No teacher"}</div></td>
                       <td><span className={e.paymentType === "full" ? "bgg" : e.paymentType === "waived" ? "bgld" : "bgry"} style={{ fontSize: 10 }}>{ptypeLabel(e.paymentType)}</span>{lastPay && <div style={{ fontSize: 10, color: "#bbb" }}>{fmtDate(lastPay.date)}</div>}</td>
                       <td><span className={bal > 0 ? "brr" : "bgg"} style={{ fontSize: 11 }}>{`$${bal.toFixed(2)}`}</span></td>
                       <td><div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}><button className="btn bg bxs" onClick={() => openEditEnrollment(e)}>Edit</button>{["instalment", "partial", "discounted"].includes(e.paymentType) && bal > 0 && <button className="btn bgold bxs" onClick={() => setPaymentModal({ enrollmentId: e.id })}>+Pay</button>}{lastPay && <button className="btn bo bxs" onClick={() => issueReceiptFor(e, lastPay)}>Rec.</button>}<button className="btn bd bxs" onClick={() => deleteEnrollment(e.id)}>Del</button></div></td>
@@ -899,23 +934,11 @@ export default function App() {
 
         <div className="card" style={{ marginBottom: 22 }}>
           <div className="sec">Payment</div>
-          {!form.editingEnrollId ? (
-            <>
-              <div className="r2" style={{ marginBottom: 12 }}><div className="fg"><label>Type *</label><select value={form.paymentType} onChange={e => f("paymentType", e.target.value)}><option value="full">Paid in Full</option><option value="partial">Partially Paid</option><option value="instalment">Instalments</option><option value="discounted">Discounted</option><option value="waived">Waived</option></select></div>{(form.paymentType === "full" || form.paymentType === "discounted") && <div className="fg"><label>Date</label><input type="date" value={form.paymentDate} onChange={e => f("paymentDate", e.target.value)} /></div>}</div>
-              {form.paymentType === "full" && <div className="r2"><div className="fg"><label>Method</label><select value={form.paymentMethod} onChange={e => f("paymentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div><div className="fg"><label>Note</label><input value={form.paymentNote} onChange={e => f("paymentNote", e.target.value)} placeholder="Optional" /></div></div>}
-              {form.paymentType === "discounted" && <div><div className="r2" style={{ marginBottom: 10 }}><div className="fg"><label>Amount ($)</label><MoneyInput value={form.discountedAmount} onChange={v => f("discountedAmount", v)} /></div><div className="fg"><label>Method</label><select value={form.paymentMethod} onChange={e => f("paymentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div></div></div>}
-              {(form.paymentType === "instalment" || form.paymentType === "partial") && <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 12 }}><div style={{ fontSize: 12, color: "#aaa", marginBottom: 8 }}>{form.paymentType === "partial" ? "Amount paid so far" : "Initial payment today"}</div><div className="r2" style={{ marginBottom: 8 }}><div className="fg"><label>Amount ($)</label><MoneyInput value={form.instalmentPaid} onChange={v => f("instalmentPaid", v)} /></div><div className="fg"><label>Date</label><input type="date" value={form.instalmentDate} onChange={e => f("instalmentDate", e.target.value)} /></div></div><div className="fg"><label>Method</label><select value={form.instalmentMethod} onChange={e => f("instalmentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div></div>}
-              {form.paymentType === "waived" && <div className="fg"><label>Reason</label><select value={form.waiverType} onChange={e => f("waiverType", e.target.value)}>{WAIVER_TYPES.map(w => <option key={w}>{w}</option>)}</select></div>}
-            </>
-          ) : (
-            <>
-              <div style={{ background: "#f8f6f1", borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}><strong>Payment Type:</strong> {ptypeLabel(form.paymentType)}</div>
-              {(form.paymentType === "full" || form.paymentType === "discounted") && <div className="fg"><label>Payment Method</label><select value={form.paymentMethod} onChange={e => f("paymentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>}
-              {(form.paymentType === "instalment" || form.paymentType === "partial") && editingPaymentCount <= 1 && <div className="fg"><label>{editingPaymentCount === 0 ? "Payment Method" : "Initial Payment Method"}</label><select value={form.instalmentMethod} onChange={e => f("instalmentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>}
-              {(form.paymentType === "instalment" || form.paymentType === "partial") && editingPaymentCount > 1 && <div style={{ background: "#f8f6f1", borderRadius: 10, padding: 12, fontSize: 13, color: "#777" }}>Multiple payments recorded. Use Families view to edit individual payment methods.</div>}
-              {form.paymentType === "waived" && <div style={{ background: "#f8f6f1", borderRadius: 10, padding: 12, fontSize: 13 }}><strong>Reason:</strong> {form.waiverType || "-"}</div>}
-            </>
-          )}
+          <div className="r2" style={{ marginBottom: 12 }}><div className="fg"><label>Type *</label><select value={form.paymentType} onChange={e => f("paymentType", e.target.value)}>{PAYMENT_FILTER_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>{(form.paymentType === "full" || form.paymentType === "discounted" || form.paymentType === "waived") && <div className="fg"><label>Date</label><input type="date" value={form.paymentDate} onChange={e => f("paymentDate", e.target.value)} /></div>}</div>
+          {form.paymentType === "full" && <div className="r2"><div className="fg"><label>Method</label><select value={form.paymentMethod} onChange={e => f("paymentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div><div className="fg"><label>Note</label><input value={form.paymentNote} onChange={e => f("paymentNote", e.target.value)} placeholder="Optional" /></div></div>}
+          {form.paymentType === "discounted" && <div><div className="r2" style={{ marginBottom: 10 }}><div className="fg"><label>Amount ($)</label><MoneyInput value={form.discountedAmount} onChange={v => f("discountedAmount", v)} /></div><div className="fg"><label>Method</label><select value={form.paymentMethod} onChange={e => f("paymentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div></div><div className="fg"><label>Note</label><input value={form.paymentNote} onChange={e => f("paymentNote", e.target.value)} placeholder="Optional" /></div></div>}
+          {(form.paymentType === "instalment" || form.paymentType === "partial") && <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 12 }}><div style={{ fontSize: 12, color: "#aaa", marginBottom: 8 }}>{form.paymentType === "partial" ? "Amount paid so far" : "Initial payment today"}</div>{form.editingEnrollId && editingPaymentCount > 1 && <div style={{ background: "#f8f6f1", borderRadius: 8, padding: "9px 10px", marginBottom: 10, fontSize: 12, color: "#777" }}>Multiple payments are already recorded. This screen can update the payment type and method, but individual payment amounts and dates should still be edited in Families view.</div>}<div className="r2" style={{ marginBottom: 8 }}><div className="fg"><label>Amount ($)</label><MoneyInput value={form.instalmentPaid} onChange={v => f("instalmentPaid", v)} placeholder="0.00" disabled={form.editingEnrollId && editingPaymentCount > 1} /></div><div className="fg"><label>Date</label><input type="date" value={form.instalmentDate} onChange={e => f("instalmentDate", e.target.value)} disabled={form.editingEnrollId && editingPaymentCount > 1} /></div></div><div className="r2"><div className="fg"><label>Method</label><select value={form.instalmentMethod} onChange={e => f("instalmentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div><div className="fg"><label>Note</label><input value={form.paymentNote} onChange={e => f("paymentNote", e.target.value)} placeholder="Optional" /></div></div></div>}
+          {form.paymentType === "waived" && <div><div className="fg" style={{ marginBottom: 10 }}><label>Reason</label><select value={form.waiverType} onChange={e => f("waiverType", e.target.value)}>{WAIVER_TYPES.map(w => <option key={w}>{w}</option>)}</select></div><div className="fg"><label>Note</label><input value={form.paymentNote} onChange={e => f("paymentNote", e.target.value)} placeholder="Optional" /></div></div>}
         </div>
         <div style={{ display: "flex", gap: 10 }}>
           <button className="btn bp" onClick={submitEnrollment} disabled={saving}>{saving ? "Saving..." : form.editingEnrollId ? "Save Changes" : "Enroll Student"}</button>
@@ -1005,7 +1028,7 @@ export default function App() {
         {(() => {
           const teacherOptions = (lookupProgramFilter === "juniors" ? juniorTeachers : lookupProgramFilter === "brothers" ? (adultTeachers.brothers || []) : lookupProgramFilter === "sisters" ? (adultTeachers.sisters || []) : [...juniorTeachers, ...(adultTeachers.brothers || []), ...(adultTeachers.sisters || [])]).map(t => ({ value: t.id, label: t.name })).sort((a, b) => a.label.localeCompare(b.label));
           const levelOptions = lookupProgramFilter === "juniors" ? JUNIOR_LEVELS.map((label, i) => ({ value: `juniors:${i}`, label })) : (lookupProgramFilter === "brothers" || lookupProgramFilter === "sisters") ? (adultLevels[lookupProgramFilter] || []).map(label => ({ value: `${lookupProgramFilter}:${label}`, label })) : [];
-          const hasInput = Boolean(lookupQuery || lookupProgramFilter || lookupLevelFilter || lookupGenderFilter || lookupTeacherFilter);
+          const hasInput = Boolean(lookupQuery || lookupProgramFilter || lookupLevelFilter || lookupGenderFilter || lookupTeacherFilter || lookupPaymentFilter);
           return (
             <>
               <div className="card" style={{ marginBottom: 14 }}>
@@ -1018,6 +1041,7 @@ export default function App() {
                   <div className="fg"><label>Gender</label><select value={lookupGenderFilter} onChange={e => handleLookupGenderFilter(e.target.value)}><option value="">All genders</option><option value="Male">Male</option><option value="Female">Female</option></select></div>
                   <div className="fg"><label>Teacher</label><select value={lookupTeacherFilter} onChange={e => handleLookupTeacherFilter(e.target.value)}><option value="">All teachers</option>{teacherOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select></div>
                 </div>
+                <div className="fg" style={{ marginTop: 12 }}><label>Payment Status</label><select value={lookupPaymentFilter} onChange={e => handleLookupPaymentFilter(e.target.value)}><option value="">All payment types</option>{PAYMENT_FILTER_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
                 {hasInput && <div style={{ marginTop: 10, fontSize: 12, color: "#888", fontWeight: 600 }}>{`${lookupResults.length} ${lookupResults.length === 1 ? "student" : "students"} found`}</div>}
                 {lookupResults.length > 0 && <div style={{ marginTop: 10 }}><button className="btn bo bsm" onClick={printLookupResults}>Print / Save PDF</button></div>}
                 {hasInput && !lookupResults.length && <div style={{ marginTop: 10, fontSize: 13, color: "#bbb" }}>No results.</div>}
