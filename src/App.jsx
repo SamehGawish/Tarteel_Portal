@@ -116,6 +116,24 @@ function getJuniorBaseRate(n) { if (n === 1) return 210; if (n === 2) return 190
 function roundMoney(v) { return Math.round((Number(v) || 0) * 100) / 100; }
 function getPaymentTypeLabel(paymentType) { return paymentType === "full" ? "Paid Full" : paymentType === "partial" ? "Partially Paid" : paymentType === "instalment" ? "Instalment" : paymentType === "discounted" ? "Discounted" : "Waived"; }
 function isFixedAdultPriceProgram(program) { return program === "brothers" || program === "sisters"; }
+function getBrothersFixedRate(teacherId, teacherName, fallbackRate = 0) {
+  const normalizedName = String(teacherName || "").toLowerCase().trim();
+  if (BROTHERS_RATE_OVERRIDES[teacherId] != null) return BROTHERS_RATE_OVERRIDES[teacherId];
+  if (normalizedName === "sh. saad") return 200;
+  if (normalizedName === "sh. abu kudus") return 300;
+  return roundMoney(fallbackRate);
+}
+function getEnrollmentConfiguredRate(enrollment) {
+  if (!enrollment) return 0;
+  if (enrollment.program === "brothers") return getBrothersFixedRate(enrollment.teacherId, enrollment.teacherName, enrollment.monthlyRate || 0);
+  return roundMoney(enrollment.monthlyRate || 0);
+}
+function getEnrollmentBaseTotal(enrollment) {
+  if (!enrollment) return 0;
+  if (enrollment.program === "juniors") return roundMoney(enrollment.semesterTotal || getJuniorBaseRate(1));
+  if (isFixedAdultPriceProgram(enrollment.program)) return roundMoney(getEnrollmentConfiguredRate(enrollment) || enrollment.semesterTotal || 0);
+  return roundMoney(getAdultProgramTotal(enrollment.program, getEnrollmentConfiguredRate(enrollment), SEMESTER_MONTHS_DEFAULT) || enrollment.semesterTotal || 0);
+}
 function getAdultProgramTotal(program, rate, semMonths) {
   const normalizedRate = roundMoney(rate);
   return isFixedAdultPriceProgram(program) ? normalizedRate : roundMoney(normalizedRate * semMonths);
@@ -168,8 +186,8 @@ function getRecordedPaidAmount(e) {
 }
 function getEnrollmentPaymentTarget(e) {
   if (!e || e.paymentType === "waived") return 0;
-  if (e.paymentType === "discounted") return roundMoney(e.discountedAmount || e.semesterTotal || 0);
-  return roundMoney(e.semesterTotal || 0);
+  if (e.paymentType === "discounted") return roundMoney(e.discountedAmount || e.semesterTotal || getEnrollmentBaseTotal(e) || 0);
+  return getEnrollmentBaseTotal(e);
 }
 function calcFamilyBilling(family, persons, enrollments) {
   const memberIds = family.personIds || [];
@@ -378,6 +396,7 @@ export default function App() {
   const [dbError, setDbError] = useState(null);
   const [view, setView] = useState("dashboard");
   const [activeProg, setActiveProg] = useState("juniors");
+  const [dashboardSort, setDashboardSort] = useState({ key: "", direction: "asc" });
   const [persons, setPersons] = useState([]);
   const [families, setFamilies] = useState([]);
   const [enrollments, setEnrollments] = useState([]);
@@ -412,6 +431,27 @@ export default function App() {
   const [lookupResults, setLookupResults] = useState([]);
   const videoRef = useRef(null); const streamRef = useRef(null);
 
+  function normalizeEnrollmentRecord(enrollment) {
+    if (!enrollment) return enrollment;
+    const normalizedRate = getEnrollmentConfiguredRate(enrollment);
+    const normalizedTarget = getEnrollmentPaymentTarget({ ...enrollment, monthlyRate: normalizedRate });
+    const normalizedAmountPaid = (enrollment.paymentType === "full" || enrollment.paymentType === "waived" || enrollment.paymentType === "discounted")
+      ? normalizedTarget
+      : getRecordedPaidAmount(enrollment);
+    return {
+      ...enrollment,
+      monthlyRate: normalizedRate || enrollment.monthlyRate || 0,
+      semesterTotal: enrollment.paymentType === "discounted" ? roundMoney(enrollment.discountedAmount || enrollment.semesterTotal || normalizedTarget) : normalizedTarget,
+      amountPaid: normalizedAmountPaid,
+    };
+  }
+
+  function hasEnrollmentFinancialChanges(original, normalized) {
+    return roundMoney(original.monthlyRate || 0) !== roundMoney(normalized.monthlyRate || 0)
+      || roundMoney(original.semesterTotal || 0) !== roundMoney(normalized.semesterTotal || 0)
+      || roundMoney(original.amountPaid || 0) !== roundMoney(normalized.amountPaid || 0);
+  }
+
   useEffect(() => {
     if (!session) return;
     async function loadData() {
@@ -419,7 +459,11 @@ export default function App() {
       try {
         const [{ data: p, error: pe }, { data: f, error: fe }, { data: e, error: ee }] = await Promise.all([supabase.from("persons").select("*").order("created_at", { ascending: true }), supabase.from("families").select("*").order("created_at", { ascending: true }), supabase.from("enrollments").select("*").order("created_at", { ascending: true })]);
         if (pe) throw pe; if (fe) throw fe; if (ee) throw ee;
-        setPersons((p || []).map(mapPersonFromDb)); setFamilies((f || []).map(mapFamilyFromDb)); setEnrollments((e || []).map(mapEnrollmentFromDb));
+        const mappedEnrollments = (e || []).map(mapEnrollmentFromDb);
+        const normalizedEnrollments = mappedEnrollments.map(normalizeEnrollmentRecord);
+        setPersons((p || []).map(mapPersonFromDb)); setFamilies((f || []).map(mapFamilyFromDb)); setEnrollments(normalizedEnrollments);
+        const changedEnrollments = normalizedEnrollments.filter((enrollment, index) => hasEnrollmentFinancialChanges(mappedEnrollments[index], enrollment));
+        if (changedEnrollments.length) await Promise.all(changedEnrollments.map(enrollment => supabase.from("enrollments").upsert(mapEnrollmentToDb(enrollment))));
         const nums = (p || []).map(x => parseInt((x.student_num || "").replace("T-", ""))).filter(n => !isNaN(n));
         if (nums.length) studentCounter = Math.max(...nums);
         const { data: tRows, error: tErr } = await supabase.from("teachers").select("*").order("created_at", { ascending: true });
@@ -615,7 +659,7 @@ export default function App() {
         if (updatedEnroll) {
           const updatedRate = form.monthlyRate || 0;
           const paymentValues = buildEnrollmentPaymentValues(updatedEnroll.program, updatedRate, updatedEnroll.paymentHistory || []);
-          const newE = { ...updatedEnroll, teacherId: form.teacherId, teacherName: form.teacherName, level: form.level, levelName: form.levelName, monthlyRate: updatedRate, semesterTotal: paymentValues.semesterTotal, amountPaid: paymentValues.amountPaid, paymentType: form.paymentType, paymentMethod: paymentValues.paymentMethod, waiverType: form.waiverType, discountedAmount: paymentValues.discountedAmount, paymentHistory: paymentValues.paymentHistory };
+          const newE = normalizeEnrollmentRecord({ ...updatedEnroll, teacherId: form.teacherId, teacherName: form.teacherName, level: form.level, levelName: form.levelName, monthlyRate: updatedRate, semesterTotal: paymentValues.semesterTotal, amountPaid: paymentValues.amountPaid, paymentType: form.paymentType, paymentMethod: paymentValues.paymentMethod, waiverType: form.waiverType, discountedAmount: paymentValues.discountedAmount, paymentHistory: paymentValues.paymentHistory });
           const { error: eErr } = await supabase.from("enrollments").upsert(mapEnrollmentToDb(newE));
           if (eErr) throw eErr;
           setEnrollments(prev => prev.map(e => e.id === form.editingEnrollId ? newE : e));
@@ -633,7 +677,8 @@ export default function App() {
       else if (form.paymentType === "discounted" && discAmt > 0) history.push({ id: uid(), date: form.paymentDate, amount: discAmt, method: form.paymentMethod, note: form.paymentNote || "Discounted total paid", type: "discounted" });
       else if ((form.paymentType === "instalment" || form.paymentType === "partial") && initPaid > 0) history.push({ id: uid(), date: form.instalmentDate, amount: initPaid, method: form.instalmentMethod, note: form.paymentNote || (form.paymentType === "partial" ? "Partial payment" : "Initial instalment"), type: form.paymentType });
       else if (form.paymentType === "waived") history.push({ id: uid(), date: form.paymentDate, amount: 0, method: "-", note: form.paymentNote || `Waived — ${form.waiverType}`, type: "waived" });
-      const enrollData = { id: uid(), personId, program: form.program, level: form.level, levelName: form.levelName, teacherId: form.teacherId, teacherName: form.teacherName, monthlyRate: form.monthlyRate || 0, semesterTotal: semTotal, amountPaid, paymentType: form.paymentType, paymentMethod: form.paymentMethod, waiverType: form.waiverType, discountedAmount: discAmt, paymentHistory: history, active: true, semesterLabel };
+      const topLevelPaymentMethod = form.paymentType === "full" || form.paymentType === "discounted" ? form.paymentMethod : form.paymentType === "waived" ? "-" : form.instalmentMethod;
+      const enrollData = normalizeEnrollmentRecord({ id: uid(), personId, program: form.program, level: form.level, levelName: form.levelName, teacherId: form.teacherId, teacherName: form.teacherName, monthlyRate: form.monthlyRate || 0, semesterTotal: semTotal, amountPaid, paymentType: form.paymentType, paymentMethod: topLevelPaymentMethod, waiverType: form.waiverType, discountedAmount: discAmt, paymentHistory: history, active: true, semesterLabel });
       const { error: enrollErr } = await supabase.from("enrollments").upsert(mapEnrollmentToDb(enrollData));
       if (enrollErr) throw enrollErr;
       setEnrollments(prev => [...prev, enrollData]);
@@ -647,7 +692,7 @@ export default function App() {
     setSaving(true);
     const entry = { id: uid(), date: instalment.date, amount: amt, method: instalment.method, note: instalment.note, type: "instalment" };
     let updatedEnroll = null;
-    const newEnrollments = enrollments.map(e => { if (e.id !== paymentModal.enrollmentId) return e; const rawPaid = customBal !== "" ? (getEnrollmentPaymentTarget(e) - parseFloat(customBal)) : (e.amountPaid || 0) + amt; updatedEnroll = { ...e, amountPaid: Math.round(rawPaid * 100) / 100, paymentHistory: [...(e.paymentHistory || []), entry] }; return updatedEnroll; });
+    const newEnrollments = enrollments.map(e => { if (e.id !== paymentModal.enrollmentId) return e; const rawPaid = customBal !== "" ? (getEnrollmentPaymentTarget(e) - parseFloat(customBal)) : (e.amountPaid || 0) + amt; updatedEnroll = normalizeEnrollmentRecord({ ...e, amountPaid: Math.round(rawPaid * 100) / 100, paymentHistory: [...(e.paymentHistory || []), entry] }); return updatedEnroll; });
     try { if (updatedEnroll) { const { error } = await supabase.from("enrollments").upsert(mapEnrollmentToDb(updatedEnroll)); if (error) throw error; setEnrollments(newEnrollments); const person = persons.find(p => p.id === updatedEnroll.personId); setReceiptModal({ person, enrollment: updatedEnroll, payment: entry, receiptNum: nextReceiptNum(person) }); } } catch (err) { alert("Error saving payment: " + (err.message || JSON.stringify(err))); }
     setInstalment({ amount: "", method: "Cash", date: today(), note: "" }); setCustomBal(""); setPaymentModal(null); setSaving(false);
   }
@@ -656,13 +701,13 @@ export default function App() {
   async function saveEditedPayment() {
     const newAmt = Math.round(parseFloat(editPaymentForm.amount) * 100) / 100; if (isNaN(newAmt) || newAmt < 0) { alert("Enter a valid amount."); return; }
     setSaving(true); let updatedEnroll = null;
-    const newEnrollments = enrollments.map(e => { if (e.id !== editPaymentModal.enrollmentId) return e; const newHistory = (e.paymentHistory || []).map(h => h.id !== editPaymentModal.paymentId ? h : { ...h, amount: newAmt, date: editPaymentForm.date, method: editPaymentForm.method, note: editPaymentForm.note }); const discPay = e.paymentType === "discounted" ? newHistory.find(h => h.type === "discounted") : null; const newSemTotal = discPay ? Math.round((discPay.amount || 0) * 100) / 100 : e.semesterTotal; const newAmtPaid = (e.paymentType === "full" || e.paymentType === "waived" || e.paymentType === "discounted") ? newSemTotal : Math.round(newHistory.reduce((a, h) => a + (h.amount || 0), 0) * 100) / 100; updatedEnroll = { ...e, paymentHistory: newHistory, semesterTotal: newSemTotal, discountedAmount: discPay ? newSemTotal : e.discountedAmount, amountPaid: newAmtPaid }; return updatedEnroll; });
+    const newEnrollments = enrollments.map(e => { if (e.id !== editPaymentModal.enrollmentId) return e; const newHistory = (e.paymentHistory || []).map(h => h.id !== editPaymentModal.paymentId ? h : { ...h, amount: newAmt, date: editPaymentForm.date, method: editPaymentForm.method, note: editPaymentForm.note }); const discPay = e.paymentType === "discounted" ? newHistory.find(h => h.type === "discounted") : null; const newSemTotal = discPay ? Math.round((discPay.amount || 0) * 100) / 100 : getEnrollmentPaymentTarget(e); const newAmtPaid = (e.paymentType === "full" || e.paymentType === "waived" || e.paymentType === "discounted") ? newSemTotal : Math.round(newHistory.reduce((a, h) => a + (h.amount || 0), 0) * 100) / 100; updatedEnroll = normalizeEnrollmentRecord({ ...e, paymentHistory: newHistory, semesterTotal: newSemTotal, discountedAmount: discPay ? newSemTotal : e.discountedAmount, amountPaid: newAmtPaid }); return updatedEnroll; });
     try { if (updatedEnroll) { const { error } = await supabase.from("enrollments").upsert(mapEnrollmentToDb(updatedEnroll)); if (error) throw error; } setEnrollments(newEnrollments); } catch (err) { alert("Error saving: " + (err.message || JSON.stringify(err))); }
     setEditPaymentModal(null); setSaving(false);
   }
   async function deletePayment(enrollmentId, paymentId) {
     if (!window.confirm("Delete this payment entry?")) return; setSaving(true); let updatedEnroll = null;
-    const newEnrollments = enrollments.map(e => { if (e.id !== enrollmentId) return e; const newHistory = (e.paymentHistory || []).filter(h => h.id !== paymentId); const newAmtPaid = (e.paymentType === "full" || e.paymentType === "waived") ? e.semesterTotal : Math.round(newHistory.reduce((a, h) => a + (h.amount || 0), 0) * 100) / 100; updatedEnroll = { ...e, paymentHistory: newHistory, amountPaid: newAmtPaid }; return updatedEnroll; });
+    const newEnrollments = enrollments.map(e => { if (e.id !== enrollmentId) return e; const newHistory = (e.paymentHistory || []).filter(h => h.id !== paymentId); const newAmtPaid = (e.paymentType === "full" || e.paymentType === "waived") ? getEnrollmentPaymentTarget(e) : Math.round(newHistory.reduce((a, h) => a + (h.amount || 0), 0) * 100) / 100; updatedEnroll = normalizeEnrollmentRecord({ ...e, paymentHistory: newHistory, amountPaid: newAmtPaid }); return updatedEnroll; });
     try { if (updatedEnroll) { const { error } = await supabase.from("enrollments").upsert(mapEnrollmentToDb(updatedEnroll)); if (error) throw error; } setEnrollments(newEnrollments); } catch (err) { alert("Error deleting: " + (err.message || JSON.stringify(err))); }
     setSaving(false);
   }
@@ -709,6 +754,29 @@ export default function App() {
   }
 
   const progEnrollments = prog => enrollments.filter(e => e.program === prog && e.active);
+  const toggleDashboardSort = key => setDashboardSort(prev => prev.key === key ? { key, direction: prev.direction === "asc" ? "desc" : "asc" } : { key, direction: "asc" });
+  const getDashboardSortIndicator = key => dashboardSort.key === key ? (dashboardSort.direction === "asc" ? " ▲" : " ▼") : "";
+  const getSortedProgramEnrollments = prog => {
+    const items = progEnrollments(prog).slice();
+    if (!dashboardSort.key) return items;
+    return items.sort((a, b) => {
+      let left = "";
+      let right = "";
+      if (dashboardSort.key === "name") {
+        const personA = persons.find(p => p.id === a.personId);
+        const personB = persons.find(p => p.id === b.personId);
+        left = `${personA?.firstName || ""} ${personA?.lastName || ""}`.trim().toLowerCase();
+        right = `${personB?.firstName || ""} ${personB?.lastName || ""}`.trim().toLowerCase();
+      } else if (dashboardSort.key === "payment") {
+        left = getPaymentTypeLabel(a.paymentType).toLowerCase();
+        right = getPaymentTypeLabel(b.paymentType).toLowerCase();
+      }
+      const primary = left.localeCompare(right);
+      if (primary !== 0) return dashboardSort.direction === "asc" ? primary : -primary;
+      const fallback = String(a.id || "").localeCompare(String(b.id || ""));
+      return dashboardSort.direction === "asc" ? fallback : -fallback;
+    });
+  };
   const totalOutstanding = families.reduce((a, fam) => a + Math.max(0, calcFamilyBilling(fam, persons, enrollments, semesterMonths).balance), 0);
 
   if (authLoading) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#f8f6f1" }}><div style={{ textAlign: "center" }}><img src={LOGO_URL} alt="Tarteel" style={{ width: 72, height: 72, objectFit: "contain", borderRadius: 10, opacity: 0.85 }} /><div style={{ marginTop: 14, fontSize: 16, color: "#aaa" }}>Loading...</div></div></div>;
@@ -824,9 +892,9 @@ export default function App() {
           <div className="card" style={{ overflowX: "auto" }}>
             <div className="sec">{`${PROGRAMS[activeProg]} — ${progEnrollments(activeProg).length} students`}</div>
             <table className="tbl" style={{ minWidth: isMobile ? 500 : "auto" }}>
-              <thead><tr><th>#</th><th>Name</th><th>G</th><th>Age</th><th>DOB</th><th>Level / Teacher</th><th>Payment</th><th>Bal.</th><th></th></tr></thead>
+              <thead><tr><th>#</th><th style={{ cursor: "pointer", userSelect: "none" }} onClick={() => toggleDashboardSort("name")}>{`Name${getDashboardSortIndicator("name")}`}</th><th>G</th><th>Age</th><th>DOB</th><th>Level / Teacher</th><th style={{ cursor: "pointer", userSelect: "none" }} onClick={() => toggleDashboardSort("payment")}>{`Payment${getDashboardSortIndicator("payment")}`}</th><th>Bal.</th><th></th></tr></thead>
               <tbody>
-                {progEnrollments(activeProg).map(e => {
+                {getSortedProgramEnrollments(activeProg).map(e => {
                   const person = persons.find(p => p.id === e.personId); if (!person) return null;
                   const bal = enrollBalance(e); const lastPay = e.paymentHistory && e.paymentHistory[e.paymentHistory.length - 1];
                   return (
