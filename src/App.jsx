@@ -413,6 +413,8 @@ export default function App() {
   const [dobError, setDobError] = useState("");
   const [selectedFamilyId, setSelectedFamilyId] = useState(null);
   const [paymentModal, setPaymentModal] = useState(null);
+  const [familyPaymentModal, setFamilyPaymentModal] = useState(null);
+  const [familyPayment, setFamilyPayment] = useState({ amount: "", method: "Cash", date: today(), note: "" });
   const [editPaymentModal, setEditPaymentModal] = useState(null);
   const [editPaymentForm, setEditPaymentForm] = useState({ amount: "", date: "", method: "Cash", note: "" });
   const [instalment, setInstalment] = useState({ amount: "", method: "Cash", date: today(), note: "" });
@@ -429,6 +431,8 @@ export default function App() {
   const [lookupTeacherFilter, setLookupTeacherFilter] = useState("");
   const [lookupPaymentFilter, setLookupPaymentFilter] = useState("");
   const [lookupResults, setLookupResults] = useState([]);
+  const [mailingProgramFilter, setMailingProgramFilter] = useState("");
+  const [mailingCopyMsg, setMailingCopyMsg] = useState("");
   const videoRef = useRef(null); const streamRef = useRef(null);
 
   function normalizeEnrollmentRecord(enrollment) {
@@ -697,6 +701,40 @@ export default function App() {
     setInstalment({ amount: "", method: "Cash", date: today(), note: "" }); setCustomBal(""); setPaymentModal(null); setSaving(false);
   }
 
+  async function addFamilyPayment() {
+    const fam = families.find(f => f.id === familyPaymentModal?.familyId);
+    const amt = roundMoney(parseFloat(familyPayment.amount) || 0);
+    if (!fam) return;
+    if (!amt || amt <= 0) { alert("Enter a valid amount."); return; }
+    const billing = calcFamilyBilling(fam, persons, enrollments);
+    if (billing.balance <= 0) { alert("This family has no outstanding balance."); return; }
+
+    setSaving(true);
+    let remaining = Math.min(amt, billing.balance);
+    const touched = [];
+    const newEnrollments = enrollments.map(e => {
+      if (remaining <= 0) return e;
+      const line = billing.lineItems.find(item => item.enrollmentId === e.id);
+      if (!line || line.balance <= 0) return e;
+      const applied = roundMoney(Math.min(remaining, line.balance));
+      remaining = roundMoney(remaining - applied);
+      const entry = { id: uid(), date: familyPayment.date, amount: applied, method: familyPayment.method, note: familyPayment.note || `Family payment — ${fam.name || "Family"}`, type: "family" };
+      const updated = normalizeEnrollmentRecord({ ...e, paymentHistory: [...(e.paymentHistory || []), entry] });
+      touched.push(updated);
+      return updated;
+    });
+
+    try {
+      if (touched.length) {
+        await Promise.all(touched.map(enrollment => supabase.from("enrollments").upsert(mapEnrollmentToDb(enrollment))));
+        setEnrollments(newEnrollments);
+      }
+    } catch (err) { alert("Error saving family payment: " + (err.message || JSON.stringify(err))); }
+    setFamilyPayment({ amount: "", method: "Cash", date: today(), note: "" });
+    setFamilyPaymentModal(null);
+    setSaving(false);
+  }
+
   function openEditPayment(enrollmentId, payment) { setEditPaymentModal({ enrollmentId, paymentId: payment.id }); setEditPaymentForm({ amount: String(payment.amount), date: payment.date, method: payment.method, note: payment.note || "" }); }
   async function saveEditedPayment() {
     const newAmt = Math.round(parseFloat(editPaymentForm.amount) * 100) / 100; if (isNaN(newAmt) || newAmt < 0) { alert("Enter a valid amount."); return; }
@@ -730,6 +768,28 @@ export default function App() {
   }
 
   function issueReceiptFor(enrollment, payment) { const person = persons.find(p => p.id === enrollment.personId); setReceiptModal({ person, enrollment, payment, receiptNum: nextReceiptNum(person) }); }
+
+  async function copyMailingEmails(emails) {
+    if (!emails) return;
+    try {
+      if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(emails);
+      else {
+        const ta = document.createElement("textarea");
+        ta.value = emails;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setMailingCopyMsg("Copied");
+      setTimeout(() => setMailingCopyMsg(""), 1800);
+    } catch {
+      setMailingCopyMsg("Could not copy");
+      setTimeout(() => setMailingCopyMsg(""), 2200);
+    }
+  }
 
   async function saveTeacher() {
     if (!teacherForm.name.trim()) { setTeacherMsg("Name required."); return; }
@@ -1043,6 +1103,7 @@ export default function App() {
                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#888", marginTop: 2 }}><span>Total Paid</span><span>{`$${billing.totalPaid.toFixed(2)}`}</span></div>
                       <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontWeight: 700, fontSize: 14 }}><span>Balance</span><span style={{ color: billing.balance > 0 ? "var(--red)" : "var(--g)" }}>{`$${billing.balance.toFixed(2)}`}</span></div>
                       {billing.savings > 0 && <div style={{ display: "flex", justifyContent: "space-between", marginTop: 2, fontWeight: 700, fontSize: 13 }}><span>Saved</span><span style={{ color: "var(--gold)" }}>{`$${billing.savings.toFixed(2)}`}</span></div>}
+                      {billing.balance > 0 && <button className="btn bgold bsm" style={{ marginTop: 10 }} onClick={() => setFamilyPaymentModal({ familyId: fam.id })}>Record Family Payment</button>}
                     </div>
                     {(fam.personIds || []).map(pid => {
                       const person = persons.find(p => p.id === pid); if (!person) return null;
@@ -1164,14 +1225,28 @@ export default function App() {
 
     if (view === "mailing") {
       const emailMap = {};
-      persons.forEach(p => { const progEnrolls = enrollments.filter(e => e.personId === p.id && e.active); const progLabels = progEnrolls.map(e => PROGRAMS[e.program]).join(", "); if (p.email) emailMap[p.email] = emailMap[p.email] || { name: `${p.firstName} ${p.lastName}`, role: "Student", programs: progLabels }; if (p.parent1Email) emailMap[p.parent1Email] = emailMap[p.parent1Email] || { name: ([p.parent1First, p.parent1Last].filter(Boolean).join(" ")) || `${p.firstName} Parent`, role: "Parent", programs: progLabels }; if (p.parent2Email) emailMap[p.parent2Email] = emailMap[p.parent2Email] || { name: ([p.parent2First, p.parent2Last].filter(Boolean).join(" ")) || `${p.firstName} Parent 2`, role: "Parent", programs: progLabels }; });
+      persons.forEach(p => {
+        const progEnrolls = enrollments.filter(e => e.personId === p.id && e.active && (!mailingProgramFilter || e.program === mailingProgramFilter));
+        if (!progEnrolls.length) return;
+        const progLabels = progEnrolls.map(e => PROGRAMS[e.program]).join(", ");
+        if (p.email) emailMap[p.email] = emailMap[p.email] || { name: `${p.firstName} ${p.lastName}`, role: "Student", programs: progLabels };
+        if (p.parent1Email) emailMap[p.parent1Email] = emailMap[p.parent1Email] || { name: ([p.parent1First, p.parent1Last].filter(Boolean).join(" ")) || `${p.firstName} Parent`, role: "Parent", programs: progLabels };
+        if (p.parent2Email) emailMap[p.parent2Email] = emailMap[p.parent2Email] || { name: ([p.parent2First, p.parent2Last].filter(Boolean).join(" ")) || `${p.firstName} Parent 2`, role: "Parent", programs: progLabels };
+      });
       const entries = Object.entries(emailMap); const allEmails = entries.map(e => e[0]).join(", ");
       return (
         <div className="fade" style={{ padding: pad }}>
           <h1 style={{ fontSize: isMobile ? 20 : 24, fontWeight: 700, marginBottom: 4 }}>Mailing List</h1>
-          <p style={{ color: "#aaa", fontSize: 13, marginBottom: 16 }}>{`${entries.length} email addresses on file`}</p>
+          <p style={{ color: "#aaa", fontSize: 13, marginBottom: 16 }}>{`${entries.length} email ${entries.length === 1 ? "address" : "addresses"}${mailingProgramFilter ? ` for ${PROGRAMS[mailingProgramFilter]}` : " on file"}`}</p>
+          <div className="card" style={{ marginBottom: 14 }}>
+            <div className="sec">Filter</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <div className={`ptab juniors${mailingProgramFilter === "" ? " on" : ""}`} onClick={() => setMailingProgramFilter("")}>All</div>
+              {PROGRAM_KEYS.map(pk => <div key={pk} className={`ptab ${pk}${mailingProgramFilter === pk ? " on" : ""}`} onClick={() => setMailingProgramFilter(pk)}>{isMobile ? pk.charAt(0).toUpperCase() + pk.slice(1) : PROGRAMS[pk]}</div>)}
+            </div>
+          </div>
           {entries.length === 0 ? <div className="card" style={{ textAlign: "center", padding: 40, color: "#ccc" }}>No emails yet.</div>
-            : <div><div className="card" style={{ marginBottom: 14 }}><div className="sec">All Emails</div><textarea readOnly value={allEmails} rows={3} onClick={e => { e.target.select(); document.execCommand("copy"); }} style={{ width: "100%", padding: "10px 12px", border: "1.5px solid #ddd", borderRadius: 8, fontSize: 12, fontFamily: "monospace", background: "#fafafa", cursor: "pointer", resize: "none", color: "#1a1a1a" }} /><div style={{ fontSize: 11, color: "#aaa", marginTop: 4 }}>Click to copy all</div><a href={`mailto:?bcc=${encodeURIComponent(allEmails)}`} style={{ display: "inline-block", marginTop: 8, padding: "8px 16px", background: "var(--g)", color: "#fff", borderRadius: 6, fontSize: 13, fontWeight: 600, textDecoration: "none" }}>Open in Mail App (BCC All)</a></div><div className="card" style={{ overflowX: "auto" }}><div className="sec">All Contacts</div><table className="tbl" style={{ minWidth: 320 }}><thead><tr><th>#</th><th>Name</th><th>Email</th><th>Role</th></tr></thead><tbody>{entries.map((entry, i) => { const email = entry[0]; const info = entry[1]; return <tr key={email}><td style={{ color: "#bbb", fontSize: 11 }}>{i + 1}</td><td style={{ fontWeight: 600 }}>{info.name || "-"}</td><td><a href={`mailto:${email}`} style={{ color: "var(--g)", textDecoration: "none", fontSize: 12 }}>{email}</a></td><td><span className="bgry" style={{ fontSize: 10 }}>{info.role}</span></td></tr>; })}</tbody></table></div></div>}
+            : <div><div className="card" style={{ marginBottom: 14 }}><div className="sec">{mailingProgramFilter ? `${PROGRAMS[mailingProgramFilter]} Emails` : "All Emails"}</div><textarea readOnly value={allEmails} rows={3} onFocus={e => e.target.select()} style={{ width: "100%", padding: "10px 12px", border: "1.5px solid #ddd", borderRadius: 8, fontSize: 12, fontFamily: "monospace", background: "#fafafa", resize: "none", color: "#1a1a1a" }} /><div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}><button className="btn bp" onClick={() => copyMailingEmails(allEmails)} style={{ display: "inline-block", padding: "8px 16px", borderRadius: 6, fontSize: 13 }}>Copy Emails</button><a href={`mailto:?bcc=${encodeURIComponent(allEmails)}`} style={{ display: "inline-block", padding: "8px 16px", background: "var(--g)", color: "#fff", borderRadius: 6, fontSize: 13, fontWeight: 600, textDecoration: "none" }}>Open in Mail App (BCC All)</a>{mailingCopyMsg && <span style={{ fontSize: 12, color: mailingCopyMsg === "Copied" ? "var(--g)" : "var(--red)", fontWeight: 700 }}>{mailingCopyMsg}</span>}</div></div><div className="card" style={{ overflowX: "auto" }}><div className="sec">All Contacts</div><table className="tbl" style={{ minWidth: 320 }}><thead><tr><th>#</th><th>Name</th><th>Email</th><th>Role</th></tr></thead><tbody>{entries.map((entry, i) => { const email = entry[0]; const info = entry[1]; return <tr key={email}><td style={{ color: "#bbb", fontSize: 11 }}>{i + 1}</td><td style={{ fontWeight: 600 }}>{info.name || "-"}</td><td><a href={`mailto:${email}`} style={{ color: "var(--g)", textDecoration: "none", fontSize: 12 }}>{email}</a></td><td><span className="bgry" style={{ fontSize: 10 }}>{info.role}</span></td></tr>; })}</tbody></table></div></div>}
         </div>
       );
     }
@@ -1199,6 +1274,13 @@ export default function App() {
       ) : (
         <div style={{ display: "flex", minHeight: "100vh" }}><Sidebar /><main style={{ flex: 1, overflowY: "auto" }}>{renderMain()}</main></div>
       )}
+
+      {familyPaymentModal && (() => {
+        const fam = families.find(f => f.id === familyPaymentModal.familyId);
+        const billing = fam ? calcFamilyBilling(fam, persons, enrollments) : null;
+        if (!fam || !billing) return null;
+        return <div className="mbg" onClick={() => setFamilyPaymentModal(null)}><div className="modal fade" onClick={e => e.stopPropagation()}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}><h2 style={{ fontSize: 19, fontWeight: 700 }}>Record Family Payment</h2><button className="btn" onClick={() => setFamilyPaymentModal(null)} style={{ fontSize: 20, color: "#bbb", padding: "0 6px" }}>x</button></div><div style={{ background: "#f8f6f1", borderRadius: 10, padding: 12, marginBottom: 14 }}><div style={{ fontWeight: 700, marginBottom: 3 }}>{fam.name || "Family"}</div><div style={{ fontSize: 13, color: "#888" }}>{`${billing.lineItems.length} ${billing.lineItems.length === 1 ? "child" : "children"} · Balance: `}<span style={{ color: "var(--red)", fontWeight: 700 }}>{`$${billing.balance.toFixed(2)}`}</span></div><div style={{ fontSize: 11, color: "#aaa", marginTop: 5 }}>One payment is applied against the family balance automatically.</div></div><div className="r2" style={{ marginBottom: 12 }}><div className="fg"><label>Amount ($) *</label><MoneyInput value={familyPayment.amount} onChange={v => setFamilyPayment(p => ({ ...p, amount: v }))} placeholder={`Up to $${billing.balance.toFixed(2)}`} autoFocus /></div><div className="fg"><label>Date *</label><input type="date" value={familyPayment.date} onChange={e => setFamilyPayment(p => ({ ...p, date: e.target.value }))} /></div></div><div className="fg" style={{ marginBottom: 12 }}><label>Method</label><select value={familyPayment.method} onChange={e => setFamilyPayment(p => ({ ...p, method: e.target.value }))}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div><div className="fg" style={{ marginBottom: 16 }}><label>Note</label><input value={familyPayment.note} onChange={e => setFamilyPayment(p => ({ ...p, note: e.target.value }))} placeholder="Optional" /></div><div style={{ display: "flex", gap: 8 }}><button className="btn bp" onClick={addFamilyPayment} disabled={saving}>{saving ? "Saving..." : "Confirm Payment"}</button><button className="btn bg" onClick={() => { setFamilyPaymentModal(null); setFamilyPayment({ amount: "", method: "Cash", date: today(), note: "" }); }}>Cancel</button></div></div></div>;
+      })()}
 
       {paymentModal && (() => { const enroll = enrollments.find(e => e.id === paymentModal.enrollmentId); const person = enroll ? persons.find(p => p.id === enroll.personId) : null; const bal = enroll ? enrollBalance(enroll) : 0; if (!enroll || !person) return null; return <div className="mbg" onClick={() => setPaymentModal(null)}><div className="modal fade" onClick={e => e.stopPropagation()}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}><h2 style={{ fontSize: 19, fontWeight: 700 }}>Record Payment</h2><button className="btn" onClick={() => setPaymentModal(null)} style={{ fontSize: 20, color: "#bbb", padding: "0 6px" }}>x</button></div><div style={{ background: "#f8f6f1", borderRadius: 10, padding: 12, marginBottom: 14 }}><div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}><span className="sn">{person.studentNum}</span><span style={{ fontWeight: 700 }}>{`${person.firstName} ${person.lastName}`}</span></div><div style={{ fontSize: 12, color: "#888" }}>{`${PROGRAMS[enroll.program]} — ${enroll.teacherName}`}</div><div style={{ fontSize: 13, marginTop: 3 }}>{"Balance: "}<span style={{ color: "var(--red)", fontWeight: 700 }}>{`$${bal.toFixed(2)}`}</span></div></div><div className="r2" style={{ marginBottom: 12 }}><div className="fg"><label>Amount ($) *</label><MoneyInput value={instalment.amount} onChange={v => setInstalment(p => ({ ...p, amount: v }))} placeholder={`Up to $${bal.toFixed(2)}`} autoFocus /></div><div className="fg"><label>Date *</label><input type="date" value={instalment.date} onChange={e => setInstalment(p => ({ ...p, date: e.target.value }))} /></div></div><div className="fg" style={{ marginBottom: 12 }}><label>Method</label><select value={instalment.method} onChange={e => setInstalment(p => ({ ...p, method: e.target.value }))}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div><div className="fg" style={{ marginBottom: 12 }}><label>Note</label><input value={instalment.note} onChange={e => setInstalment(p => ({ ...p, note: e.target.value }))} placeholder="Optional" /></div><div style={{ background: "#fef5e4", border: "1px solid #f0d080", borderRadius: 8, padding: 10, marginBottom: 14 }}><div style={{ fontSize: 11, fontWeight: 700, color: "var(--gold)", marginBottom: 6 }}>Override Balance (optional)</div><div className="fg"><label>Custom balance ($)</label><MoneyInput value={customBal} onChange={setCustomBal} placeholder={`Auto: $${Math.max(0, bal - (parseFloat(instalment.amount) || 0)).toFixed(2)}`} /></div></div><div style={{ display: "flex", gap: 8 }}><button className="btn bp" onClick={addPayment} disabled={saving}>{saving ? "Saving..." : "Confirm & Receipt"}</button><button className="btn bg" onClick={() => { setPaymentModal(null); setCustomBal(""); }}>Cancel</button></div></div></div>; })()}
 
