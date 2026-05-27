@@ -432,6 +432,7 @@ export default function App() {
   const [lookupPaymentFilter, setLookupPaymentFilter] = useState("");
   const [lookupResults, setLookupResults] = useState([]);
   const [mailingProgramFilter, setMailingProgramFilter] = useState("");
+  const [mailingTeacherFilter, setMailingTeacherFilter] = useState("");
   const [mailingCopyMsg, setMailingCopyMsg] = useState("");
   const videoRef = useRef(null); const streamRef = useRef(null);
 
@@ -1225,8 +1226,10 @@ export default function App() {
 
     if (view === "mailing") {
       const emailMap = {};
+      const mailingTeacherOptions = (mailingProgramFilter === "juniors" ? juniorTeachers : mailingProgramFilter === "brothers" ? (adultTeachers.brothers || []) : mailingProgramFilter === "sisters" ? (adultTeachers.sisters || []) : [...juniorTeachers, ...(adultTeachers.brothers || []), ...(adultTeachers.sisters || [])]).map(t => ({ value: t.id, label: t.name })).sort((a, b) => a.label.localeCompare(b.label));
+      const selectedMailingTeacher = mailingTeacherOptions.find(t => t.value === mailingTeacherFilter);
       persons.forEach(p => {
-        const progEnrolls = enrollments.filter(e => e.personId === p.id && e.active && (!mailingProgramFilter || e.program === mailingProgramFilter));
+        const progEnrolls = enrollments.filter(e => e.personId === p.id && e.active && (!mailingProgramFilter || e.program === mailingProgramFilter) && (!mailingTeacherFilter || e.teacherId === mailingTeacherFilter));
         if (!progEnrolls.length) return;
         const progLabels = progEnrolls.map(e => PROGRAMS[e.program]).join(", ");
         if (p.email) emailMap[p.email] = emailMap[p.email] || { name: `${p.firstName} ${p.lastName}`, role: "Student", programs: progLabels };
@@ -1237,13 +1240,14 @@ export default function App() {
       return (
         <div className="fade" style={{ padding: pad }}>
           <h1 style={{ fontSize: isMobile ? 20 : 24, fontWeight: 700, marginBottom: 4 }}>Mailing List</h1>
-          <p style={{ color: "#aaa", fontSize: 13, marginBottom: 16 }}>{`${entries.length} email ${entries.length === 1 ? "address" : "addresses"}${mailingProgramFilter ? ` for ${PROGRAMS[mailingProgramFilter]}` : " on file"}`}</p>
+          <p style={{ color: "#aaa", fontSize: 13, marginBottom: 16 }}>{`${entries.length} email ${entries.length === 1 ? "address" : "addresses"}${mailingProgramFilter ? ` for ${PROGRAMS[mailingProgramFilter]}` : " on file"}${selectedMailingTeacher ? ` · ${selectedMailingTeacher.label}` : ""}`}</p>
           <div className="card" style={{ marginBottom: 14 }}>
             <div className="sec">Filter</div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <div className={`ptab juniors${mailingProgramFilter === "" ? " on" : ""}`} onClick={() => setMailingProgramFilter("")}>All</div>
-              {PROGRAM_KEYS.map(pk => <div key={pk} className={`ptab ${pk}${mailingProgramFilter === pk ? " on" : ""}`} onClick={() => setMailingProgramFilter(pk)}>{isMobile ? pk.charAt(0).toUpperCase() + pk.slice(1) : PROGRAMS[pk]}</div>)}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+              <div className={`ptab juniors${mailingProgramFilter === "" ? " on" : ""}`} onClick={() => { setMailingProgramFilter(""); setMailingTeacherFilter(""); }}>All</div>
+              {PROGRAM_KEYS.map(pk => <div key={pk} className={`ptab ${pk}${mailingProgramFilter === pk ? " on" : ""}`} onClick={() => { setMailingProgramFilter(pk); setMailingTeacherFilter(""); }}>{isMobile ? pk.charAt(0).toUpperCase() + pk.slice(1) : PROGRAMS[pk]}</div>)}
             </div>
+            <div className="fg"><label>Teacher</label><select value={mailingTeacherFilter} onChange={e => setMailingTeacherFilter(e.target.value)}><option value="">All teachers</option>{mailingTeacherOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select></div>
           </div>
           {entries.length === 0 ? <div className="card" style={{ textAlign: "center", padding: 40, color: "#ccc" }}>No emails yet.</div>
             : <div><div className="card" style={{ marginBottom: 14 }}><div className="sec">{mailingProgramFilter ? `${PROGRAMS[mailingProgramFilter]} Emails` : "All Emails"}</div><textarea readOnly value={allEmails} rows={3} onFocus={e => e.target.select()} style={{ width: "100%", padding: "10px 12px", border: "1.5px solid #ddd", borderRadius: 8, fontSize: 12, fontFamily: "monospace", background: "#fafafa", resize: "none", color: "#1a1a1a" }} /><div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}><button className="btn bp" onClick={() => copyMailingEmails(allEmails)} style={{ display: "inline-block", padding: "8px 16px", borderRadius: 6, fontSize: 13 }}>Copy Emails</button><a href={`mailto:?bcc=${encodeURIComponent(allEmails)}`} style={{ display: "inline-block", padding: "8px 16px", background: "var(--g)", color: "#fff", borderRadius: 6, fontSize: 13, fontWeight: 600, textDecoration: "none" }}>Open in Mail App (BCC All)</a>{mailingCopyMsg && <span style={{ fontSize: 12, color: mailingCopyMsg === "Copied" ? "var(--g)" : "var(--red)", fontWeight: 700 }}>{mailingCopyMsg}</span>}</div></div><div className="card" style={{ overflowX: "auto" }}><div className="sec">All Contacts</div><table className="tbl" style={{ minWidth: 320 }}><thead><tr><th>#</th><th>Name</th><th>Email</th><th>Role</th></tr></thead><tbody>{entries.map((entry, i) => { const email = entry[0]; const info = entry[1]; return <tr key={email}><td style={{ color: "#bbb", fontSize: 11 }}>{i + 1}</td><td style={{ fontWeight: 600 }}>{info.name || "-"}</td><td><a href={`mailto:${email}`} style={{ color: "var(--g)", textDecoration: "none", fontSize: 12 }}>{email}</a></td><td><span className="bgry" style={{ fontSize: 10 }}>{info.role}</span></td></tr>; })}</tbody></table></div></div>}
