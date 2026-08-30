@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 function mapPersonFromDb(p) {
@@ -435,6 +435,9 @@ export default function App() {
   const [mailingTeacherFilter, setMailingTeacherFilter] = useState("");
   const [mailingCopyMsg, setMailingCopyMsg] = useState("");
   const videoRef = useRef(null); const streamRef = useRef(null);
+  const [semesters, setSemesters] = useState([]);
+  const [selectedSemesterId, setSelectedSemesterId] = useState("all");
+  const [semesterSummary, setSemesterSummary] = useState({ funds_received: 0, funds_subsidized: 0, funds_owed: 0 });
 
   function normalizeEnrollmentRecord(enrollment) {
     if (!enrollment) return enrollment;
@@ -477,11 +480,35 @@ export default function App() {
           setJuniorTeachers(ts.juniors);
           setAdultTeachers({ ...ts.adults, brothers: applyBrothersRateOverrides(ts.adults.brothers || []) });
         }
+        const { data: semRows, error: semErr } = await supabase.from("semesters").select("*").order("academic_year", { ascending: true }).order("term", { ascending: true });
+        if (!semErr) {
+          setSemesters(semRows || []);
+          const current = (semRows || []).find(s => s.is_current);
+          if (current) setSelectedSemesterId(current.id);
+        }
       } catch { setDbError("Could not connect to database. Check your Supabase credentials."); }
       setLoading(false);
     }
     loadData();
   }, [session]);
+
+  useEffect(() => {
+    if (!session) return;
+    async function loadSummary() {
+      if (selectedSemesterId === "all") {
+        const { data } = await supabase.from("semester_summary_view").select("*");
+        setSemesterSummary({
+          funds_received: (data || []).reduce((a, r) => a + Number(r.funds_received || 0), 0),
+          funds_subsidized: (data || []).reduce((a, r) => a + Number(r.funds_subsidized || 0), 0),
+          funds_owed: (data || []).reduce((a, r) => a + Number(r.funds_owed || 0), 0),
+        });
+      } else {
+        const { data } = await supabase.from("semester_summary_view").select("*").eq("semester_id", selectedSemesterId).maybeSingle();
+        setSemesterSummary(data || { funds_received: 0, funds_subsidized: 0, funds_owed: 0 });
+      }
+    }
+    loadSummary();
+  }, [session, selectedSemesterId]);
 
   useEffect(() => { window.localStorage.setItem(STORAGE_KEYS.semesterLabel, semesterLabel); }, [semesterLabel]);
   useEffect(() => { window.localStorage.setItem(STORAGE_KEYS.semesterMonths, String(semesterMonths)); }, [semesterMonths]);
@@ -936,6 +963,15 @@ export default function App() {
       <div className="fade" style={{ padding: pad }}>
         <h1 style={{ fontSize: isMobile ? 22 : 26, fontWeight: 700, marginBottom: 2 }}>Dashboard</h1>
         <p style={{ color: "#aaa", fontSize: 13, marginBottom: 16 }}>{semesterLabel}</p>
+        <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+          <div className={`ptab juniors${selectedSemesterId === "all" ? " on" : ""}`} onClick={() => setSelectedSemesterId("all")}>All</div>
+          {semesters.map(s => <div key={s.id} className={`ptab juniors${selectedSemesterId === s.id ? " on" : ""}`} onClick={() => setSelectedSemesterId(s.id)}>{s.label}</div>)}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: isMobile ? 10 : 14, marginBottom: 16 }}>
+          <div className="card" style={{ borderTop: "4px solid var(--g)", padding: isMobile ? 12 : 16 }}><div style={{ fontSize: 11, color: "#bbb", marginBottom: 3 }}>Funds Received</div><div style={{ fontSize: isMobile ? 20 : 24, fontWeight: 700, color: "var(--g)" }}>{`$${Number(semesterSummary.funds_received || 0).toFixed(2)}`}</div></div>
+          <div className="card" style={{ borderTop: "4px solid #888", padding: isMobile ? 12 : 16 }}><div style={{ fontSize: 11, color: "#bbb", marginBottom: 3 }}>Funds Subsidized</div><div style={{ fontSize: isMobile ? 20 : 24, fontWeight: 700, color: "#888" }}>{`$${Number(semesterSummary.funds_subsidized || 0).toFixed(2)}`}</div></div>
+          <div className="card" style={{ borderTop: "4px solid var(--red)", padding: isMobile ? 12 : 16 }}><div style={{ fontSize: 11, color: "#bbb", marginBottom: 3 }}>Funds Owed</div><div style={{ fontSize: isMobile ? 20 : 24, fontWeight: 700, color: "var(--red)" }}>{`$${Number(semesterSummary.funds_owed || 0).toFixed(2)}`}</div></div>
+        </div>
         <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr", gap: isMobile ? 10 : 14, marginBottom: 14 }}>
           {[{ label: "Juniors", val: progEnrollments("juniors").length, color: "var(--g)", prog: "juniors" }, { label: "Brothers", val: progEnrollments("brothers").length, color: "var(--bro)", prog: "brothers" }, { label: "Sisters", val: progEnrollments("sisters").length, color: "var(--sis)", prog: "sisters" }, { label: "Families", val: families.length, color: "#555", prog: null }].map(s => <div key={s.label} className="card" style={{ borderTop: `4px solid ${s.color}`, padding: isMobile ? 12 : 16, cursor: s.prog ? "pointer" : "default" }} onClick={() => { if (s.prog) setActiveProg(s.prog); }}><div style={{ fontSize: 11, color: "#bbb", marginBottom: 3 }}>{s.label}</div><div style={{ fontSize: isMobile ? 22 : 26, fontWeight: 700, color: s.color }}>{s.val}</div></div>)}
         </div>
