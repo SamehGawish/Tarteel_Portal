@@ -241,6 +241,14 @@ function fmtPhone(v) { const d = (v || "").replace(/\D/g, ""); if (d.length < 4)
 function today() { return new Date().toLocaleDateString("en-CA"); }
 function fmtDate(d) { if (!d) return "-"; try { return new Date(d + "T12:00:00").toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" }); } catch { return d; } }
 
+function rowColorFor(paymentType) {
+  if (paymentType === "waived") return "#ececec";
+  if (paymentType === "full") return "rgba(46,160,67,0.08)";
+  if (paymentType === "instalment") return "rgba(230,126,34,0.08)";
+  if (paymentType === "partial") return "rgba(231,76,60,0.08)";
+  return "transparent";
+}
+
 // ─── DOB helpers ──────────────────────────────────────────────────────────────
 function calcAgeFromDob(dob) {
   if (!dob) return null;
@@ -438,6 +446,10 @@ export default function App() {
   const [semesters, setSemesters] = useState([]);
   const [selectedSemesterId, setSelectedSemesterId] = useState("all");
   const [semesterSummary, setSemesterSummary] = useState({ funds_received: 0, funds_subsidized: 0, funds_owed: 0 });
+  const [studentListRows, setStudentListRows] = useState([]);
+  const [studentSearch, setStudentSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [discountFilter, setDiscountFilter] = useState(false);
 
   function normalizeEnrollmentRecord(enrollment) {
     if (!enrollment) return enrollment;
@@ -491,6 +503,17 @@ export default function App() {
     }
     loadData();
   }, [session]);
+
+  useEffect(() => {
+    if (!session) return;
+    async function loadStudentList() {
+      let query = supabase.from("student_list_view").select("*");
+      if (selectedSemesterId !== "all") query = query.eq("semester_id", selectedSemesterId);
+      const { data } = await query;
+      setStudentListRows(data || []);
+    }
+    loadStudentList();
+  }, [session, selectedSemesterId]);
 
   useEffect(() => {
     if (!session) return;
@@ -975,43 +998,59 @@ export default function App() {
         <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr", gap: isMobile ? 10 : 14, marginBottom: 14 }}>
           {[{ label: "Juniors", val: progEnrollments("juniors").length, color: "var(--g)", prog: "juniors" }, { label: "Brothers", val: progEnrollments("brothers").length, color: "var(--bro)", prog: "brothers" }, { label: "Sisters", val: progEnrollments("sisters").length, color: "var(--sis)", prog: "sisters" }, { label: "Families", val: families.length, color: "#555", prog: null }].map(s => <div key={s.label} className="card" style={{ borderTop: `4px solid ${s.color}`, padding: isMobile ? 12 : 16, cursor: s.prog ? "pointer" : "default" }} onClick={() => { if (s.prog) setActiveProg(s.prog); }}><div style={{ fontSize: 11, color: "#bbb", marginBottom: 3 }}>{s.label}</div><div style={{ fontSize: isMobile ? 22 : 26, fontWeight: 700, color: s.color }}>{s.val}</div></div>)}
         </div>
-        <div className="card" style={{ borderTop: "4px solid var(--red)", padding: isMobile ? 12 : 16, display: "inline-block", minWidth: 160, marginBottom: 16 }}>
-          <div style={{ fontSize: 11, color: "#bbb", marginBottom: 3 }}>Outstanding Balance</div>
-          <div style={{ fontSize: isMobile ? 22 : 26, fontWeight: 700, color: "var(--red)" }}>{`$${totalOutstanding.toFixed(2)}`}</div>
-        </div>
         <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>{PROGRAM_KEYS.map(pk => <div key={pk} className={`ptab ${pk}${activeProg === pk ? " on" : ""}`} onClick={() => setActiveProg(pk)}>{isMobile ? pk.charAt(0).toUpperCase() + pk.slice(1) : PROGRAMS[pk]}</div>)}</div>
-        {progEnrollments(activeProg).length === 0 ? (
-          <div className="card" style={{ textAlign: "center", padding: "32px 16px", color: "#ccc" }}>
-            <div style={{ fontSize: 14, marginBottom: 10 }}>{`No students in ${PROGRAMS[activeProg]} yet`}</div>
-            <button className="btn bp" onClick={() => { setForm({ ...INIT_FORM, program: activeProg }); setView("enroll"); }}>Enroll First Student</button>
-          </div>
-        ) : (
-          <div className="card" style={{ overflowX: "auto" }}>
-            <div className="sec">{`${PROGRAMS[activeProg]} — ${progEnrollments(activeProg).length} students`}</div>
-            <table className="tbl" style={{ minWidth: isMobile ? 500 : "auto" }}>
-              <thead><tr><th>#</th><th style={{ cursor: "pointer", userSelect: "none" }} onClick={() => toggleDashboardSort("name")}>{`Name${getDashboardSortIndicator("name")}`}</th><th>G</th><th>Age</th><th>DOB</th><th>Level / Teacher</th><th style={{ cursor: "pointer", userSelect: "none" }} onClick={() => toggleDashboardSort("payment")}>{`Payment${getDashboardSortIndicator("payment")}`}</th><th>Bal.</th><th></th></tr></thead>
-              <tbody>
-                {getSortedProgramEnrollments(activeProg).map(e => {
-                  const person = persons.find(p => p.id === e.personId); if (!person) return null;
-                  const bal = enrollBalance(e); const lastPay = e.paymentHistory && e.paymentHistory[e.paymentHistory.length - 1];
-                  return (
-                    <tr key={e.id}>
-                      <td><span className="sn">{person.studentNum || "-"}</span></td>
-                      <td><div style={{ display: "flex", alignItems: "center", gap: 6 }}>{person.photo ? <img src={person.photo} style={{ width: 26, height: 26, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--g)", flexShrink: 0 }} /> : null}<div><div style={{ fontWeight: 600, fontSize: 13 }}>{`${person.firstName} ${person.lastName}`}</div>{person.hasAllergy && <span style={{ fontSize: 9, background: "#fdecea", color: "#e74c3c", padding: "1px 4px", borderRadius: 3 }}>Allergy</span>}</div></div></td>
-                      <td style={{ fontSize: 11 }}>{person.gender === "Female" ? "F" : "M"}</td>
-                      <td>{person.age}</td>
-                      <td style={{ fontSize: 11, color: "#888", whiteSpace: "nowrap" }}>{person.dateOfBirth ? fmtDob(person.dateOfBirth) : <span style={{ color: "#ccc" }}>—</span>}</td>
-                      <td style={{ fontSize: 12 }}><div>{getEnrollmentLevelLabel(e)}</div><div style={{ fontSize: 10, color: "#888" }}>{e.teacherName || "No teacher"}</div></td>
-                      <td><span className={e.paymentType === "full" ? "bgg" : e.paymentType === "waived" ? "bgld" : "bgry"} style={{ fontSize: 10 }}>{ptypeLabel(e.paymentType)}</span>{lastPay && <div style={{ fontSize: 10, color: "#bbb" }}>{fmtDate(lastPay.date)}</div>}</td>
-                      <td><span className={bal > 0 ? "brr" : "bgg"} style={{ fontSize: 11 }}>{`$${bal.toFixed(2)}`}</span></td>
-                      <td><div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}><button className="btn bg bxs" onClick={() => openEditEnrollment(e)}>Edit</button>{["instalment", "partial", "discounted"].includes(e.paymentType) && bal > 0 && <button className="btn bgold bxs" onClick={() => setPaymentModal({ enrollmentId: e.id })}>+Pay</button>}{lastPay && <button className="btn bo bxs" onClick={() => issueReceiptFor(e, lastPay)}>Rec.</button>}<button className="btn bd bxs" onClick={() => deleteEnrollment(e.id)}>Del</button></div></td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+
+        <div className="card" style={{ padding: 12, marginBottom: 14, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <input value={studentSearch} onChange={e => setStudentSearch(e.target.value)} placeholder="Search name, teacher, or level..." style={{ flex: "1 1 220px", padding: "8px 12px", border: "1.5px solid #ddd", borderRadius: 8, fontSize: 13 }} />
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={{ padding: "8px 10px", border: "1.5px solid #ddd", borderRadius: 8, fontSize: 13 }}>
+            <option value="">All statuses</option>
+            <option value="full">Full</option>
+            <option value="instalment">Instalment</option>
+            <option value="partial">Partial</option>
+            <option value="waived">Waived</option>
+          </select>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}><input type="checkbox" checked={discountFilter} onChange={e => setDiscountFilter(e.target.checked)} />Has discount</label>
+        </div>
+
+        {(() => {
+          const q = studentSearch.trim().toLowerCase();
+          const rows = studentListRows.filter(r =>
+            r.program === activeProg &&
+            (!q || `${r.first_name} ${r.last_name}`.toLowerCase().includes(q) || (r.teacher_name || "").toLowerCase().includes(q) || (r.level_name || r.level || "").toLowerCase().includes(q)) &&
+            (!statusFilter || r.payment_type === statusFilter) &&
+            (!discountFilter || Number(r.discounted_amount) > 0)
+          );
+          if (rows.length === 0) return (
+            <div className="card" style={{ textAlign: "center", padding: "32px 16px", color: "#ccc" }}>
+              <div style={{ fontSize: 14, marginBottom: 10 }}>{`No students match`}</div>
+              <button className="btn bp" onClick={() => { setForm({ ...INIT_FORM, program: activeProg }); setView("enroll"); }}>Enroll First Student</button>
+            </div>
+          );
+          return (
+            <div className="card" style={{ overflowX: "auto" }}>
+              <div className="sec">{`${PROGRAMS[activeProg]} — ${rows.length} students`}</div>
+              <table className="tbl" style={{ minWidth: isMobile ? 500 : "auto" }}>
+                <thead><tr><th>Name</th><th>Level / Teacher</th><th>Payment</th><th>Bal.</th><th></th></tr></thead>
+                <tbody>
+                  {rows.map(r => {
+                    const person = persons.find(p => p.id === r.person_id);
+                    const enr = enrollments.find(x => x.id === r.enrollment_id);
+                    const lastPay = enr && enr.paymentHistory && enr.paymentHistory[enr.paymentHistory.length - 1];
+                    return (
+                      <tr key={r.enrollment_id} style={{ background: rowColorFor(r.payment_type) }}>
+                        <td><div style={{ fontWeight: 600, fontSize: 13 }}>{`${r.first_name} ${r.last_name}`}</div>{Number(r.discounted_amount) > 0 && <span style={{ fontSize: 9, background: "#555", color: "#fff", padding: "1px 5px", borderRadius: 3 }}>Discount</span>}</td>
+                        <td style={{ fontSize: 12 }}><div>{r.level_name || r.level || "—"}</div><div style={{ fontSize: 10, color: "#888" }}>{r.teacher_name || "No teacher"}</div></td>
+                        <td><span style={{ fontSize: 10 }}>{ptypeLabel(r.payment_type)}</span>{lastPay && <div style={{ fontSize: 10, color: "#bbb" }}>{fmtDate(lastPay.date)}</div>}</td>
+                        <td><span className={Number(r.outstanding_balance) > 0 ? "brr" : "bgg"} style={{ fontSize: 11 }}>{`$${Number(r.outstanding_balance || 0).toFixed(2)}`}</span></td>
+                        <td><div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>{enr && <button className="btn bg bxs" onClick={() => openEditEnrollment(enr)}>Edit</button>}{["instalment", "partial"].includes(r.payment_type) && Number(r.outstanding_balance) > 0 && enr && <button className="btn bgold bxs" onClick={() => setPaymentModal({ enrollmentId: enr.id })}>+Pay</button>}{lastPay && enr && <button className="btn bo bxs" onClick={() => issueReceiptFor(enr, lastPay)}>Rec.</button>}{enr && <button className="btn bd bxs" onClick={() => deleteEnrollment(enr.id)}>Del</button>}</div></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          );
+        })}
       </div>
     );
 
