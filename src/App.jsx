@@ -186,7 +186,6 @@ function escapeHtml(v) { return String(v || "").replace(/&/g, "&amp;").replace(/
 function buildTeacherState(rows) { return { juniors: rows.filter(t => t.program === "juniors").map(mapTeacherFromDb), adults: { brothers: rows.filter(t => t.program === "brothers").map(mapTeacherFromDb), sisters: rows.filter(t => t.program === "sisters").map(mapTeacherFromDb) } }; }
 function getRecordedPaidAmount(e) {
   if (!e) return 0;
-  if ((e.paymentHistory || []).length) return roundMoney((e.paymentHistory || []).reduce((sum, payment) => sum + (payment.amount || 0), 0));
   return roundMoney(e.amountPaid || 0);
 }
 function getEnrollmentPaymentTarget(e) {
@@ -426,8 +425,6 @@ export default function App() {
   const [selectedFamilyId, setSelectedFamilyId] = useState(null);
   const [familyPaymentModal, setFamilyPaymentModal] = useState(null);
   const [familyPayment, setFamilyPayment] = useState({ amount: "", method: "Cash", date: today(), note: "" });
-  const [editPaymentModal, setEditPaymentModal] = useState(null);
-  const [editPaymentForm, setEditPaymentForm] = useState({ amount: "", date: "", method: "Cash", note: "" });
   const [receiptModal, setReceiptModal] = useState(null);
   const [cameraActive, setCameraActive] = useState(false);
   const [teacherForm, setTeacherForm] = useState({ program: "juniors", name: "", levels: [], monthlyRate: "" });
@@ -468,24 +465,19 @@ export default function App() {
     if (!enrollment) return enrollment;
     const normalizedRate = getEnrollmentConfiguredRate(enrollment);
     const normalizedSemesterTotal = getEnrollmentBaseTotal({ ...enrollment, monthlyRate: normalizedRate });
-    const normalizedTarget = roundMoney(Math.max(0, normalizedSemesterTotal - (enrollment.discountedAmount || 0)));
-    const normalizedAmountPaid = enrollment.paymentType === "full"
-      ? normalizedTarget
-      : enrollment.paymentType === "waived"
-        ? 0
-        : getRecordedPaidAmount(enrollment);
     return {
       ...enrollment,
       monthlyRate: normalizedRate || enrollment.monthlyRate || 0,
       semesterTotal: normalizedSemesterTotal,
-      amountPaid: normalizedAmountPaid,
+      // amountPaid is intentionally left untouched here — the payments ledger + database trigger
+      // is the sole source of truth now. Recomputing it client-side from the legacy paymentHistory
+      // jsonb was silently reverting real ledger-recorded payments on every app load.
     };
   }
 
   function hasEnrollmentFinancialChanges(original, normalized) {
     return roundMoney(original.monthlyRate || 0) !== roundMoney(normalized.monthlyRate || 0)
-      || roundMoney(original.semesterTotal || 0) !== roundMoney(normalized.semesterTotal || 0)
-      || roundMoney(original.amountPaid || 0) !== roundMoney(normalized.amountPaid || 0);
+      || roundMoney(original.semesterTotal || 0) !== roundMoney(normalized.semesterTotal || 0);
   }
 
   useEffect(() => {
@@ -545,13 +537,11 @@ export default function App() {
   useEffect(() => {
     if (!session || view !== "payments" || paymentSearchMode !== "history") return;
     async function loadHistory() {
-      const currentSemester = semesters.find(s => s.is_current);
-      if (!currentSemester) { setPaymentHistoryRows([]); return; }
-      const { data } = await supabase.from("payments").select("*, enrollments!inner(semester_id)").eq("enrollments.semester_id", currentSemester.id).order("payment_date", { ascending: false });
+      const { data } = await supabase.from("payments").select("*").order("payment_date", { ascending: false });
       setPaymentHistoryRows(data || []);
     }
     loadHistory();
-  }, [session, view, paymentSearchMode, semesters]);
+  }, [session, view, paymentSearchMode]);
 
   useEffect(() => {
     if (!session) return;
@@ -779,6 +769,11 @@ export default function App() {
         }
         throw enrollErr;
       }
+      const initialPayment = paymentValues.paymentHistory[0];
+      if (initialPayment && initialPayment.amount > 0) {
+        const { error: payErr } = await supabase.from("payments").insert({ id: initialPayment.id, enrollment_id: enrollData.id, person_id: personId, amount: initialPayment.amount, payment_date: initialPayment.date, payment_method: initialPayment.method, payment_type: enrollData.paymentType, note: initialPayment.note });
+        if (payErr) throw payErr;
+      }
       setEnrollments(prev => [...prev, enrollData]);
       setForm(INIT_FORM); setView("dashboard");
     } catch (err) { alert("Error saving: " + (err.message || JSON.stringify(err))); }
@@ -854,11 +849,8 @@ export default function App() {
   async function refreshAfterHistoryChange(enrollmentId) {
     const { data: refreshedEnroll } = await supabase.from("student_list_view").select("*").eq("enrollment_id", enrollmentId).maybeSingle();
     if (refreshedEnroll) setStudentListRows(prev => prev.map(r => r.enrollment_id === enrollmentId ? refreshedEnroll : r));
-    const currentSemester = semesters.find(s => s.is_current);
-    if (currentSemester) {
-      const { data } = await supabase.from("payments").select("*, enrollments!inner(semester_id)").eq("enrollments.semester_id", currentSemester.id).order("payment_date", { ascending: false });
-      setPaymentHistoryRows(data || []);
-    }
+    const { data } = await supabase.from("payments").select("*").order("payment_date", { ascending: false });
+    setPaymentHistoryRows(data || []);
   }
 
   function openHistoryEdit(row) { setEditingPaymentRow(row.id); setEditHistoryForm({ amount: String(row.amount), date: row.payment_date, method: row.payment_method || "Cash", note: row.note || "" }); }
@@ -921,20 +913,6 @@ export default function App() {
     setSaving(false);
   }
 
-  function openEditPayment(enrollmentId, payment) { setEditPaymentModal({ enrollmentId, paymentId: payment.id }); setEditPaymentForm({ amount: String(payment.amount), date: payment.date, method: payment.method, note: payment.note || "" }); }
-  async function saveEditedPayment() {
-    const newAmt = Math.round(parseFloat(editPaymentForm.amount) * 100) / 100; if (isNaN(newAmt) || newAmt < 0) { alert("Enter a valid amount."); return; }
-    setSaving(true); let updatedEnroll = null;
-    const newEnrollments = enrollments.map(e => { if (e.id !== editPaymentModal.enrollmentId) return e; const newHistory = (e.paymentHistory || []).map(h => h.id !== editPaymentModal.paymentId ? h : { ...h, amount: newAmt, date: editPaymentForm.date, method: editPaymentForm.method, note: editPaymentForm.note }); updatedEnroll = normalizeEnrollmentRecord({ ...e, paymentHistory: newHistory }); return updatedEnroll; });
-    try { if (updatedEnroll) { const { error } = await supabase.from("enrollments").upsert(mapEnrollmentToDb(updatedEnroll)); if (error) throw error; } setEnrollments(newEnrollments); } catch (err) { alert("Error saving: " + (err.message || JSON.stringify(err))); }
-    setEditPaymentModal(null); setSaving(false);
-  }
-  async function deletePayment(enrollmentId, paymentId) {
-    if (!window.confirm("Delete this payment entry?")) return; setSaving(true); let updatedEnroll = null;
-    const newEnrollments = enrollments.map(e => { if (e.id !== enrollmentId) return e; const newHistory = (e.paymentHistory || []).filter(h => h.id !== paymentId); const newAmtPaid = (e.paymentType === "full" || e.paymentType === "waived") ? getEnrollmentPaymentTarget(e) : Math.round(newHistory.reduce((a, h) => a + (h.amount || 0), 0) * 100) / 100; updatedEnroll = normalizeEnrollmentRecord({ ...e, paymentHistory: newHistory, amountPaid: newAmtPaid }); return updatedEnroll; });
-    try { if (updatedEnroll) { const { error } = await supabase.from("enrollments").upsert(mapEnrollmentToDb(updatedEnroll)); if (error) throw error; } setEnrollments(newEnrollments); } catch (err) { alert("Error deleting: " + (err.message || JSON.stringify(err))); }
-    setSaving(false);
-  }
   async function deleteEnrollment(enrollmentId) {
     if (!window.confirm("Delete this enrollment? This cannot be undone.")) return; setSaving(true);
     try {
@@ -1276,7 +1254,7 @@ export default function App() {
           <div className="sec">Payment</div>
           <div className="r2" style={{ marginBottom: 12 }}><div className="fg"><label>Type *</label><select value={form.paymentType} onChange={e => f("paymentType", e.target.value)}>{PAYMENT_FILTER_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>{(form.paymentType === "full" || form.paymentType === "waived") && <div className="fg"><label>Date</label><input type="date" value={form.paymentDate} onChange={e => f("paymentDate", e.target.value)} /></div>}</div>
           {form.paymentType === "full" && <div><div className="r2" style={{ marginBottom: 10 }}><div className="fg"><label>Method</label><select value={form.paymentMethod} onChange={e => f("paymentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div><div className="fg"><label>Discount ($, optional)</label><MoneyInput value={form.discountedAmount} onChange={v => f("discountedAmount", v)} placeholder="0.00" /></div></div><div className="fg"><label>Note</label><input value={form.paymentNote} onChange={e => f("paymentNote", e.target.value)} placeholder="Optional" /></div></div>}
-          {(form.paymentType === "instalment" || form.paymentType === "partial") && <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 12 }}><div style={{ fontSize: 12, color: "#aaa", marginBottom: 8 }}>{form.paymentType === "partial" ? "Amount paid so far" : "Initial payment today"}</div>{form.editingEnrollId && editingPaymentCount > 1 && <div style={{ background: "#f8f6f1", borderRadius: 8, padding: "9px 10px", marginBottom: 10, fontSize: 12, color: "#777" }}>Multiple payments are already recorded. This screen can update the payment type and method, but individual payment amounts and dates should still be edited in Families view.</div>}<div className="r2" style={{ marginBottom: 8 }}><div className="fg"><label>Amount ($)</label><MoneyInput value={form.instalmentPaid} onChange={v => f("instalmentPaid", v)} placeholder="0.00" disabled={form.editingEnrollId && editingPaymentCount > 1} /></div><div className="fg"><label>Date</label><input type="date" value={form.instalmentDate} onChange={e => f("instalmentDate", e.target.value)} disabled={form.editingEnrollId && editingPaymentCount > 1} /></div></div><div className="r2"><div className="fg"><label>Method</label><select value={form.instalmentMethod} onChange={e => f("instalmentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div><div className="fg"><label>Note</label><input value={form.paymentNote} onChange={e => f("paymentNote", e.target.value)} placeholder="Optional" /></div></div></div>}
+          {(form.paymentType === "instalment" || form.paymentType === "partial") && <div style={{ background: "#fafafa", border: "1px solid #eee", borderRadius: 10, padding: 12 }}><div style={{ fontSize: 12, color: "#aaa", marginBottom: 8 }}>{form.paymentType === "partial" ? "Amount paid so far" : "Initial payment today"}</div>{form.editingEnrollId && editingPaymentCount > 1 && <div style={{ background: "#f8f6f1", borderRadius: 8, padding: "9px 10px", marginBottom: 10, fontSize: 12, color: "#777" }}>Multiple payments are already recorded. This screen can update the payment type and method, but individual payment amounts and dates should be edited in Payments → History.</div>}<div className="r2" style={{ marginBottom: 8 }}><div className="fg"><label>Amount ($)</label><MoneyInput value={form.instalmentPaid} onChange={v => f("instalmentPaid", v)} placeholder="0.00" disabled={form.editingEnrollId && editingPaymentCount > 1} /></div><div className="fg"><label>Date</label><input type="date" value={form.instalmentDate} onChange={e => f("instalmentDate", e.target.value)} disabled={form.editingEnrollId && editingPaymentCount > 1} /></div></div><div className="r2"><div className="fg"><label>Method</label><select value={form.instalmentMethod} onChange={e => f("instalmentMethod", e.target.value)}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div><div className="fg"><label>Note</label><input value={form.paymentNote} onChange={e => f("paymentNote", e.target.value)} placeholder="Optional" /></div></div></div>}
           {form.paymentType === "waived" && <div><div className="fg" style={{ marginBottom: 10 }}><label>Reason</label><select value={form.waiverType} onChange={e => f("waiverType", e.target.value)}>{WAIVER_TYPES.map(w => <option key={w}>{w}</option>)}</select></div><div className="fg"><label>Note</label><input value={form.paymentNote} onChange={e => f("paymentNote", e.target.value)} placeholder="Optional" /></div></div>}
         </div>
         <div style={{ display: "flex", gap: 10 }}>
@@ -1310,12 +1288,14 @@ export default function App() {
                   <div className="card" style={{ overflowX: "auto" }}>
                     <div className="sec">Payment History</div>
                     <input value={historySearch} onChange={e => setHistorySearch(e.target.value)} placeholder="Search by student name..." style={{ width: "100%", padding: "10px 12px", border: "1.5px solid #ddd", borderRadius: 8, fontSize: 14, marginBottom: 12 }} />
-                    {rows.length === 0 ? <div style={{ color: "#aaa", fontSize: 13, padding: 8 }}>No payments recorded this semester.</div> : (
-                      <table className="tbl" style={{ minWidth: isMobile ? 560 : "auto" }}>
-                        <thead><tr><th>Date</th><th>Student</th><th>Amount</th><th>Method</th><th>Note</th><th></th></tr></thead>
+                    {rows.length === 0 ? <div style={{ color: "#aaa", fontSize: 13, padding: 8 }}>No payments recorded yet.</div> : (
+                      <table className="tbl" style={{ minWidth: isMobile ? 620 : "auto" }}>
+                        <thead><tr><th>Date</th><th>Student</th><th>Semester</th><th>Amount</th><th>Method</th><th>Note</th><th></th></tr></thead>
                         <tbody>
                           {rows.map(row => {
                             const person = persons.find(p => p.id === row.person_id);
+                            const enr = enrollments.find(x => x.id === row.enrollment_id);
+                            const sem = enr ? semesters.find(s => s.id === enr.semesterId) : null;
                             const isEditing = editingPaymentRow === row.id;
                             return (
                               <tr key={row.id}>
@@ -1323,6 +1303,7 @@ export default function App() {
                                   <>
                                     <td><input type="date" value={editHistoryForm.date} onChange={e => setEditHistoryForm(p => ({ ...p, date: e.target.value }))} style={{ fontSize: 12, padding: "4px 6px", border: "1.5px solid #ddd", borderRadius: 6, width: 130 }} /></td>
                                     <td style={{ fontSize: 12 }}>{person ? `${person.firstName} ${person.lastName}` : "-"}</td>
+                                    <td style={{ fontSize: 11, color: "#aaa" }}>{sem ? sem.label : "-"}</td>
                                     <td><MoneyInput value={editHistoryForm.amount} onChange={v => setEditHistoryForm(p => ({ ...p, amount: v }))} /></td>
                                     <td><select value={editHistoryForm.method} onChange={e => setEditHistoryForm(p => ({ ...p, method: e.target.value }))} style={{ fontSize: 12, padding: "4px 6px" }}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></td>
                                     <td><input value={editHistoryForm.note} onChange={e => setEditHistoryForm(p => ({ ...p, note: e.target.value }))} style={{ fontSize: 12, padding: "4px 6px", border: "1.5px solid #ddd", borderRadius: 6, width: 120 }} /></td>
@@ -1332,10 +1313,11 @@ export default function App() {
                                   <>
                                     <td style={{ fontSize: 12 }}>{fmtDate(row.payment_date)}</td>
                                     <td style={{ fontSize: 12, fontWeight: 600 }}>{person ? `${person.firstName} ${person.lastName}` : "-"}</td>
+                                    <td style={{ fontSize: 11, color: "#aaa" }}>{sem ? sem.label : "-"}</td>
                                     <td style={{ fontSize: 12 }}>{`$${Number(row.amount).toFixed(2)}`}</td>
                                     <td style={{ fontSize: 12 }}>{row.payment_method || "-"}</td>
                                     <td style={{ fontSize: 12, color: "#888" }}>{row.note || "-"}</td>
-                                    <td><div style={{ display: "flex", gap: 4 }}><button className="btn bg bxs" onClick={() => openHistoryEdit(row)}>Edit</button><button className="btn bd bxs" onClick={() => deleteHistoryPayment(row)}>Delete</button></div></td>
+                                    <td><div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>{enr && <button className="btn bo bxs" onClick={() => issueReceiptFor(enr, { date: row.payment_date, amount: row.amount, method: row.payment_method, note: row.note })}>Rec.</button>}<button className="btn bg bxs" onClick={() => openHistoryEdit(row)}>Edit</button><button className="btn bd bxs" onClick={() => deleteHistoryPayment(row)}>Delete</button></div></td>
                                   </>
                                 )}
                               </tr>
@@ -1482,15 +1464,12 @@ export default function App() {
                                   <div style={{ display: "flex", gap: 5, alignItems: "center", flexWrap: "wrap" }}><span className="pj">Juniors</span><span style={{ fontSize: 12 }}>{JUNIOR_LEVELS[e.level] || ""}</span><span style={{ fontSize: 12 }}>{e.teacherName}</span></div>
                                   <div style={{ display: "flex", gap: 4, alignItems: "center" }}><span className={eBal > 0 ? "brr" : "bgg"} style={{ fontSize: 11 }}>{`$${eBal.toFixed(2)}`}</span><button className="btn bg bxs" onClick={() => openEditEnrollment(e)}>Edit</button>{["instalment", "partial"].includes(e.paymentType) && eBal > 0 && <button className="btn bgold bxs" onClick={() => { setPaymentSearchMode("individual"); setSelectedPaymentTarget({ type: "individual", enrollmentId: e.id, personId: person.id, name: `${person.firstName} ${person.lastName}`, balance: eBal }); setView("payments"); }}>+Pay</button>}<button className="btn bd bxs" onClick={() => deleteEnrollment(e.id)}>Del</button></div>
                                 </div>
-                                {e.paymentHistory && e.paymentHistory.map((h, hi) => (
-                                  <div key={hi} className="hr">
-                                    <div style={{ width: 88, fontSize: 10, color: "#aaa", flexShrink: 0 }}>{fmtDate(h.date)}</div>
-                                    <div style={{ flex: 1, fontSize: 11 }}><span style={{ fontWeight: 600, color: "var(--g)" }}>{h.amount > 0 ? `$${h.amount.toFixed(2)}` : "-"}</span><span style={{ color: "#bbb", marginLeft: 5 }}>{h.method}</span>{h.note && <span style={{ color: "#aaa", marginLeft: 5 }}>{h.note}</span>}</div>
-                                    <button className="btn bo bxs" onClick={() => issueReceiptFor(e, h)}>Rec</button>
-                                    <button className="btn bg bxs" onClick={() => openEditPayment(e.id, h)}>Edit</button>
-                                    <button className="btn bd bxs" onClick={() => deletePayment(e.id, h.id)}>X</button>
+                                {e.paymentHistory && e.paymentHistory.length > 0 && (
+                                  <div style={{ marginTop: 4 }}>
+                                    <div style={{ fontSize: 10, color: "#bbb", marginBottom: 4 }}>{`Initial payment recorded at enrollment: ${fmtDate(e.paymentHistory[0].date)} — $${(e.paymentHistory[0].amount || 0).toFixed(2)}`}</div>
+                                    <button className="btn bg bxs" onClick={() => { setPaymentSearchMode("history"); setHistorySearch(`${person.firstName} ${person.lastName}`); setView("payments"); }}>View Full Payment History</button>
                                   </div>
-                                ))}
+                                )}
                               </div>
                             );
                           })}
@@ -1641,8 +1620,6 @@ export default function App() {
       })()}
 
       {receiptModal && <ReceiptView person={receiptModal.person} enrollment={receiptModal.enrollment} payment={receiptModal.payment} receiptNum={receiptModal.receiptNum} semesterLabel={semesterLabel} onClose={() => setReceiptModal(null)} />}
-
-      {editPaymentModal && (() => { const enroll = enrollments.find(e => e.id === editPaymentModal.enrollmentId); const person = enroll ? persons.find(p => p.id === enroll.personId) : null; if (!enroll || !person) return null; return <div className="mbg" onClick={() => setEditPaymentModal(null)}><div className="modal fade" onClick={e => e.stopPropagation()}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}><h2 style={{ fontSize: 19, fontWeight: 700 }}>Edit Payment</h2><button className="btn" onClick={() => setEditPaymentModal(null)} style={{ fontSize: 20, color: "#bbb", padding: "0 6px" }}>x</button></div><div style={{ background: "#f8f6f1", borderRadius: 10, padding: 10, marginBottom: 14, fontSize: 13 }}><span className="sn" style={{ marginRight: 7 }}>{person.studentNum}</span><strong>{`${person.firstName} ${person.lastName}`}</strong></div><div className="r2" style={{ marginBottom: 12 }}><div className="fg"><label>Amount ($)</label><MoneyInput value={editPaymentForm.amount} onChange={v => setEditPaymentForm(p => ({ ...p, amount: v }))} autoFocus /></div><div className="fg"><label>Date</label><input type="date" value={editPaymentForm.date} onChange={e => setEditPaymentForm(p => ({ ...p, date: e.target.value }))} /></div></div><div className="fg" style={{ marginBottom: 12 }}><label>Method</label><select value={editPaymentForm.method} onChange={e => setEditPaymentForm(p => ({ ...p, method: e.target.value }))}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div><div className="fg" style={{ marginBottom: 16 }}><label>Note</label><input value={editPaymentForm.note} onChange={e => setEditPaymentForm(p => ({ ...p, note: e.target.value }))} placeholder="Optional" /></div><div style={{ display: "flex", gap: 8 }}><button className="btn bp" onClick={saveEditedPayment} disabled={saving}>{saving ? "Saving..." : "Save Changes"}</button><button className="btn bg" onClick={() => setEditPaymentModal(null)}>Cancel</button></div></div></div>; })()}
 
       {followUpPrompt && (
         <div className="mbg" onClick={() => setFollowUpPrompt(null)}>
