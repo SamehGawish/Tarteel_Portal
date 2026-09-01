@@ -459,6 +459,10 @@ export default function App() {
   const [followUpRows, setFollowUpRows] = useState([]);
   const [followUpEditDates, setFollowUpEditDates] = useState({});
   const [holdError, setHoldError] = useState(null);
+  const [paymentHistoryRows, setPaymentHistoryRows] = useState([]);
+  const [historySearch, setHistorySearch] = useState("");
+  const [editingPaymentRow, setEditingPaymentRow] = useState(null);
+  const [editHistoryForm, setEditHistoryForm] = useState({ amount: "", date: "", method: "Cash", note: "" });
 
   function normalizeEnrollmentRecord(enrollment) {
     if (!enrollment) return enrollment;
@@ -537,6 +541,17 @@ export default function App() {
     }
     loadFollowUps();
   }, [session, view]);
+
+  useEffect(() => {
+    if (!session || view !== "payments" || paymentSearchMode !== "history") return;
+    async function loadHistory() {
+      const currentSemester = semesters.find(s => s.is_current);
+      if (!currentSemester) { setPaymentHistoryRows([]); return; }
+      const { data } = await supabase.from("payments").select("*, enrollments!inner(semester_id)").eq("enrollments.semester_id", currentSemester.id).order("payment_date", { ascending: false });
+      setPaymentHistoryRows(data || []);
+    }
+    loadHistory();
+  }, [session, view, paymentSearchMode, semesters]);
 
   useEffect(() => {
     if (!session) return;
@@ -833,6 +848,42 @@ export default function App() {
       if (error) throw error;
       setFollowUpRows(prev => prev.filter(r => r.enrollment_id !== enrollmentId));
     } catch (err) { alert("Error: " + (err.message || JSON.stringify(err))); }
+    setSaving(false);
+  }
+
+  async function refreshAfterHistoryChange(enrollmentId) {
+    const { data: refreshedEnroll } = await supabase.from("student_list_view").select("*").eq("enrollment_id", enrollmentId).maybeSingle();
+    if (refreshedEnroll) setStudentListRows(prev => prev.map(r => r.enrollment_id === enrollmentId ? refreshedEnroll : r));
+    const currentSemester = semesters.find(s => s.is_current);
+    if (currentSemester) {
+      const { data } = await supabase.from("payments").select("*, enrollments!inner(semester_id)").eq("enrollments.semester_id", currentSemester.id).order("payment_date", { ascending: false });
+      setPaymentHistoryRows(data || []);
+    }
+  }
+
+  function openHistoryEdit(row) { setEditingPaymentRow(row.id); setEditHistoryForm({ amount: String(row.amount), date: row.payment_date, method: row.payment_method || "Cash", note: row.note || "" }); }
+
+  async function saveHistoryEdit(row) {
+    const amt = Math.round((parseFloat(editHistoryForm.amount) || 0) * 100) / 100;
+    if (!amt || amt <= 0) { alert("Enter a valid amount."); return; }
+    setSaving(true);
+    try {
+      const { error } = await supabase.from("payments").update({ amount: amt, payment_date: editHistoryForm.date, payment_method: editHistoryForm.method, note: editHistoryForm.note || null }).eq("id", row.id);
+      if (error) throw error;
+      await refreshAfterHistoryChange(row.enrollment_id);
+      setEditingPaymentRow(null);
+    } catch (err) { alert("Error saving: " + (err.message || JSON.stringify(err))); }
+    setSaving(false);
+  }
+
+  async function deleteHistoryPayment(row) {
+    if (!window.confirm("Delete this payment? This can't be undone, and the student's balance will update immediately.")) return;
+    setSaving(true);
+    try {
+      const { error } = await supabase.from("payments").delete().eq("id", row.id);
+      if (error) throw error;
+      await refreshAfterHistoryChange(row.enrollment_id);
+    } catch (err) { alert("Error deleting: " + (err.message || JSON.stringify(err))); }
     setSaving(false);
   }
 
@@ -1250,48 +1301,96 @@ export default function App() {
               <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
                 <div className={`ptab juniors${paymentSearchMode === "individual" ? " on" : ""}`} onClick={() => { setPaymentSearchMode("individual"); setSelectedPaymentTarget(null); setPaymentSearchQuery(""); }}>Individual Student</div>
                 <div className={`ptab juniors${paymentSearchMode === "family" ? " on" : ""}`} onClick={() => { setPaymentSearchMode("family"); setSelectedPaymentTarget(null); setPaymentSearchQuery(""); }}>Family</div>
+                <div className={`ptab juniors${paymentSearchMode === "history" ? " on" : ""}`} onClick={() => { setPaymentSearchMode("history"); setSelectedPaymentTarget(null); }}>History</div>
               </div>
-              <div className="card" style={{ marginBottom: 14 }}>
-                <div className="sec">{`Find ${paymentSearchMode === "individual" ? "a Student" : "a Family"}`}</div>
-                <input value={paymentSearchQuery} onChange={e => setPaymentSearchQuery(e.target.value)} placeholder="Type a name..." style={{ width: "100%", padding: "10px 12px", border: "1.5px solid #ddd", borderRadius: 8, fontSize: 14 }} />
-                {q && (
-                  <div style={{ marginTop: 10 }}>
-                    {paymentSearchMode === "individual" ? individualMatches.slice(0, 8).map(r => (
-                      <div key={r.enrollment_id} className="mc" onClick={() => { setSelectedPaymentTarget({ type: "individual", enrollmentId: r.enrollment_id, personId: r.person_id, name: `${r.first_name} ${r.last_name}`, balance: Number(r.outstanding_balance) }); setPaymentSearchQuery(""); }}>
-                        <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ fontWeight: 700 }}>{`${r.first_name} ${r.last_name}`}</span><span style={{ color: "var(--red)", fontWeight: 700 }}>{`$${Number(r.outstanding_balance).toFixed(2)}`}</span></div>
+              {paymentSearchMode === "history" ? (() => {
+                const hq = historySearch.trim().toLowerCase();
+                const rows = paymentHistoryRows.filter(row => { const person = persons.find(p => p.id === row.person_id); const name = person ? `${person.firstName} ${person.lastName}` : ""; return !hq || name.toLowerCase().includes(hq); });
+                return (
+                  <div className="card" style={{ overflowX: "auto" }}>
+                    <div className="sec">Payment History</div>
+                    <input value={historySearch} onChange={e => setHistorySearch(e.target.value)} placeholder="Search by student name..." style={{ width: "100%", padding: "10px 12px", border: "1.5px solid #ddd", borderRadius: 8, fontSize: 14, marginBottom: 12 }} />
+                    {rows.length === 0 ? <div style={{ color: "#aaa", fontSize: 13, padding: 8 }}>No payments recorded this semester.</div> : (
+                      <table className="tbl" style={{ minWidth: isMobile ? 560 : "auto" }}>
+                        <thead><tr><th>Date</th><th>Student</th><th>Amount</th><th>Method</th><th>Note</th><th></th></tr></thead>
+                        <tbody>
+                          {rows.map(row => {
+                            const person = persons.find(p => p.id === row.person_id);
+                            const isEditing = editingPaymentRow === row.id;
+                            return (
+                              <tr key={row.id}>
+                                {isEditing ? (
+                                  <>
+                                    <td><input type="date" value={editHistoryForm.date} onChange={e => setEditHistoryForm(p => ({ ...p, date: e.target.value }))} style={{ fontSize: 12, padding: "4px 6px", border: "1.5px solid #ddd", borderRadius: 6, width: 130 }} /></td>
+                                    <td style={{ fontSize: 12 }}>{person ? `${person.firstName} ${person.lastName}` : "-"}</td>
+                                    <td><MoneyInput value={editHistoryForm.amount} onChange={v => setEditHistoryForm(p => ({ ...p, amount: v }))} /></td>
+                                    <td><select value={editHistoryForm.method} onChange={e => setEditHistoryForm(p => ({ ...p, method: e.target.value }))} style={{ fontSize: 12, padding: "4px 6px" }}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></td>
+                                    <td><input value={editHistoryForm.note} onChange={e => setEditHistoryForm(p => ({ ...p, note: e.target.value }))} style={{ fontSize: 12, padding: "4px 6px", border: "1.5px solid #ddd", borderRadius: 6, width: 120 }} /></td>
+                                    <td><div style={{ display: "flex", gap: 4 }}><button className="btn bp bxs" onClick={() => saveHistoryEdit(row)} disabled={saving}>Save</button><button className="btn bg bxs" onClick={() => setEditingPaymentRow(null)}>Cancel</button></div></td>
+                                  </>
+                                ) : (
+                                  <>
+                                    <td style={{ fontSize: 12 }}>{fmtDate(row.payment_date)}</td>
+                                    <td style={{ fontSize: 12, fontWeight: 600 }}>{person ? `${person.firstName} ${person.lastName}` : "-"}</td>
+                                    <td style={{ fontSize: 12 }}>{`$${Number(row.amount).toFixed(2)}`}</td>
+                                    <td style={{ fontSize: 12 }}>{row.payment_method || "-"}</td>
+                                    <td style={{ fontSize: 12, color: "#888" }}>{row.note || "-"}</td>
+                                    <td><div style={{ display: "flex", gap: 4 }}><button className="btn bg bxs" onClick={() => openHistoryEdit(row)}>Edit</button><button className="btn bd bxs" onClick={() => deleteHistoryPayment(row)}>Delete</button></div></td>
+                                  </>
+                                )}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                );
+              })() : (
+                <>
+                  <div className="card" style={{ marginBottom: 14 }}>
+                    <div className="sec">{`Find ${paymentSearchMode === "individual" ? "a Student" : "a Family"}`}</div>
+                    <input value={paymentSearchQuery} onChange={e => setPaymentSearchQuery(e.target.value)} placeholder="Type a name..." style={{ width: "100%", padding: "10px 12px", border: "1.5px solid #ddd", borderRadius: 8, fontSize: 14 }} />
+                    {q && (
+                      <div style={{ marginTop: 10 }}>
+                        {paymentSearchMode === "individual" ? individualMatches.slice(0, 8).map(r => (
+                          <div key={r.enrollment_id} className="mc" onClick={() => { setSelectedPaymentTarget({ type: "individual", enrollmentId: r.enrollment_id, personId: r.person_id, name: `${r.first_name} ${r.last_name}`, balance: Number(r.outstanding_balance) }); setPaymentSearchQuery(""); }}>
+                            <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ fontWeight: 700 }}>{`${r.first_name} ${r.last_name}`}</span><span style={{ color: "var(--red)", fontWeight: 700 }}>{`$${Number(r.outstanding_balance).toFixed(2)}`}</span></div>
+                          </div>
+                        )) : familyMatches.slice(0, 8).map(fm => {
+                          const famBalance = candidateRows.filter(r => r.family_id === fm.id).reduce((a, r) => a + Number(r.outstanding_balance || 0), 0);
+                          return (
+                            <div key={fm.id} className="mc" onClick={() => { setSelectedPaymentTarget({ type: "family", familyId: fm.id, name: fm.name || "Family", balance: famBalance }); setPaymentSearchQuery(""); }}>
+                              <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ fontWeight: 700 }}>{fm.name || "Family"}</span><span style={{ color: "var(--red)", fontWeight: 700 }}>{`$${famBalance.toFixed(2)}`}</span></div>
+                            </div>
+                          );
+                        })}
+                        {((paymentSearchMode === "individual" && individualMatches.length === 0) || (paymentSearchMode === "family" && familyMatches.length === 0)) && <div style={{ color: "#aaa", fontSize: 13, padding: 8 }}>No matches with an outstanding balance this semester.</div>}
                       </div>
-                    )) : familyMatches.slice(0, 8).map(fm => {
-                      const famBalance = candidateRows.filter(r => r.family_id === fm.id).reduce((a, r) => a + Number(r.outstanding_balance || 0), 0);
-                      return (
-                        <div key={fm.id} className="mc" onClick={() => { setSelectedPaymentTarget({ type: "family", familyId: fm.id, name: fm.name || "Family", balance: famBalance }); setPaymentSearchQuery(""); }}>
-                          <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ fontWeight: 700 }}>{fm.name || "Family"}</span><span style={{ color: "var(--red)", fontWeight: 700 }}>{`$${famBalance.toFixed(2)}`}</span></div>
-                        </div>
-                      );
-                    })}
-                    {((paymentSearchMode === "individual" && individualMatches.length === 0) || (paymentSearchMode === "family" && familyMatches.length === 0)) && <div style={{ color: "#aaa", fontSize: 13, padding: 8 }}>No matches with an outstanding balance this semester.</div>}
+                    )}
                   </div>
-                )}
-              </div>
 
-              {selectedPaymentTarget && (
-                <div className="card">
-                  <div className="sec">Record Payment</div>
-                  <div style={{ background: "#f8f6f1", borderRadius: 10, padding: 12, marginBottom: 14 }}>
-                    <div style={{ fontWeight: 700 }}>{selectedPaymentTarget.name}</div>
-                    <div style={{ fontSize: 13, color: "#888" }}>{selectedPaymentTarget.type === "family" ? "Family balance: " : "Balance: "}<span style={{ color: "var(--red)", fontWeight: 700 }}>{`$${selectedPaymentTarget.balance.toFixed(2)}`}</span></div>
-                    {selectedPaymentTarget.type === "family" && <div style={{ fontSize: 11, color: "#aaa", marginTop: 4 }}>Applied to the oldest unpaid balances first, alphabetically by child.</div>}
-                  </div>
-                  <div className="r2" style={{ marginBottom: 12 }}>
-                    <div className="fg"><label>Amount ($) *</label><MoneyInput value={newPayment.amount} onChange={v => setNewPayment(p => ({ ...p, amount: v }))} placeholder={`Up to $${selectedPaymentTarget.balance.toFixed(2)}`} autoFocus /></div>
-                    <div className="fg"><label>Date *</label><input type="date" value={newPayment.date} onChange={e => setNewPayment(p => ({ ...p, date: e.target.value }))} /></div>
-                  </div>
-                  <div className="fg" style={{ marginBottom: 12 }}><label>Method</label><select value={newPayment.method} onChange={e => setNewPayment(p => ({ ...p, method: e.target.value }))}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
-                  <div className="fg" style={{ marginBottom: 16 }}><label>Note</label><input value={newPayment.note} onChange={e => setNewPayment(p => ({ ...p, note: e.target.value }))} placeholder="Optional" /></div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button className="btn bp" onClick={recordLedgerPayment} disabled={saving}>{saving ? "Saving..." : "Record Payment"}</button>
-                    <button className="btn bg" onClick={() => { setSelectedPaymentTarget(null); setNewPayment({ amount: "", method: "Cash", date: today(), note: "" }); }}>Cancel</button>
-                  </div>
-                </div>
+                  {selectedPaymentTarget && (
+                    <div className="card">
+                      <div className="sec">Record Payment</div>
+                      <div style={{ background: "#f8f6f1", borderRadius: 10, padding: 12, marginBottom: 14 }}>
+                        <div style={{ fontWeight: 700 }}>{selectedPaymentTarget.name}</div>
+                        <div style={{ fontSize: 13, color: "#888" }}>{selectedPaymentTarget.type === "family" ? "Family balance: " : "Balance: "}<span style={{ color: "var(--red)", fontWeight: 700 }}>{`$${selectedPaymentTarget.balance.toFixed(2)}`}</span></div>
+                        {selectedPaymentTarget.type === "family" && <div style={{ fontSize: 11, color: "#aaa", marginTop: 4 }}>Applied to the oldest unpaid balances first, alphabetically by child.</div>}
+                      </div>
+                      <div className="r2" style={{ marginBottom: 12 }}>
+                        <div className="fg"><label>Amount ($) *</label><MoneyInput value={newPayment.amount} onChange={v => setNewPayment(p => ({ ...p, amount: v }))} placeholder={`Up to $${selectedPaymentTarget.balance.toFixed(2)}`} autoFocus /></div>
+                        <div className="fg"><label>Date *</label><input type="date" value={newPayment.date} onChange={e => setNewPayment(p => ({ ...p, date: e.target.value }))} /></div>
+                      </div>
+                      <div className="fg" style={{ marginBottom: 12 }}><label>Method</label><select value={newPayment.method} onChange={e => setNewPayment(p => ({ ...p, method: e.target.value }))}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div>
+                      <div className="fg" style={{ marginBottom: 16 }}><label>Note</label><input value={newPayment.note} onChange={e => setNewPayment(p => ({ ...p, note: e.target.value }))} placeholder="Optional" /></div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button className="btn bp" onClick={recordLedgerPayment} disabled={saving}>{saving ? "Saving..." : "Record Payment"}</button>
+                        <button className="btn bg" onClick={() => { setSelectedPaymentTarget(null); setNewPayment({ amount: "", method: "Cash", date: today(), note: "" }); }}>Cancel</button>
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
             </>
           )}
