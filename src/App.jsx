@@ -105,7 +105,6 @@ const NAV_ITEMS = [
   { id: "followups", icon: "📅", label: "Follow-ups" },
   { id: "families", icon: "👨‍👩‍👧", label: "Families" },
   { id: "lookup", icon: "🔍", label: "Lookup" },
-  { id: "teachers", icon: "🎓", label: "Teachers" },
   { id: "mailing", icon: "📧", label: "Mailing" },
   { id: "settings", icon: "⚙️", label: "Settings" },
 ];
@@ -117,7 +116,14 @@ const PAYMENT_FILTER_OPTIONS = [
 ];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-function getJuniorBaseRate(n) { if (n === 1) return 210; if (n === 2) return 190; if (n === 3) return 170; return 150; }
+function getJuniorBaseRate(n, semesterId, pricingRows) {
+  const childCount = Math.min(Math.max(n || 1, 1), 4);
+  if (semesterId && pricingRows && pricingRows.length) {
+    const match = pricingRows.find(p => p.semester_id === semesterId && p.child_count === childCount);
+    if (match) return roundMoney(match.rate);
+  }
+  if (childCount === 1) return 210; if (childCount === 2) return 190; if (childCount === 3) return 170; return 150;
+}
 function roundMoney(v) { return Math.round((Number(v) || 0) * 100) / 100; }
 function getPaymentTypeLabel(paymentType) { return paymentType === "full" ? "Paid Full" : paymentType === "partial" ? "Partially Paid" : paymentType === "instalment" ? "Instalment" : "Waived"; }
 function isFixedAdultPriceProgram(program) { return program === "brothers" || program === "sisters"; }
@@ -181,7 +187,7 @@ function applyBrothersRateOverrides(list) {
 function readStoredJson(key, fallback) { try { const r = window.localStorage.getItem(key); return r ? JSON.parse(r) : fallback; } catch { return fallback; } }
 function readStoredString(key, fallback) { try { return window.localStorage.getItem(key) || fallback; } catch { return fallback; } }
 function readStoredNumber(key, fallback) { try { const r = window.localStorage.getItem(key); const p = parseInt(r || "", 10); return Number.isFinite(p) ? p : fallback; } catch { return fallback; } }
-function mapTeacherFromDb(t) { return { id: t.id, name: t.name, levels: Array.isArray(t.levels) ? t.levels.map(Number) : [], monthlyRate: Number(t.monthly_rate || 0) }; }
+function mapTeacherFromDb(t) { return { id: t.id, name: t.name, levels: Array.isArray(t.levels) ? t.levels.map(Number) : [], monthlyRate: Number(t.monthly_rate || 0), semesterId: t.semester_id }; }
 function escapeHtml(v) { return String(v || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 function buildTeacherState(rows) { return { juniors: rows.filter(t => t.program === "juniors").map(mapTeacherFromDb), adults: { brothers: rows.filter(t => t.program === "brothers").map(mapTeacherFromDb), sisters: rows.filter(t => t.program === "sisters").map(mapTeacherFromDb) } }; }
 function getRecordedPaidAmount(e) {
@@ -192,12 +198,12 @@ function getEnrollmentPaymentTarget(e) {
   if (!e || e.paymentType === "waived") return 0;
   return roundMoney(Math.max(0, getEnrollmentBaseTotal(e) - (e.discountedAmount || 0)));
 }
-function calcFamilyBilling(family, persons, enrollments) {
+function calcFamilyBilling(family, persons, enrollments, semesterId, pricingRows) {
   const memberIds = family.personIds || [];
-  const active = enrollments.filter(e => memberIds.includes(e.personId) && e.active);
+  const active = enrollments.filter(e => memberIds.includes(e.personId) && e.active && (!semesterId || e.semesterId === semesterId));
   const juniors = active.filter(e => e.program === "juniors");
-  const standardJuniorRate = getJuniorBaseRate(1);
-  const familyJuniorRate = juniors.length ? getJuniorBaseRate(juniors.length) : 0;
+  const standardJuniorRate = getJuniorBaseRate(1, semesterId, pricingRows);
+  const familyJuniorRate = juniors.length ? getJuniorBaseRate(juniors.length, semesterId, pricingRows) : 0;
   const lineItems = juniors.map(e => {
     const p = persons.find(x => x.id === e.personId);
     const recordedPaid = getRecordedPaidAmount(e);
@@ -423,8 +429,6 @@ export default function App() {
   const [dobInput, setDobInput] = useState("");
   const [dobError, setDobError] = useState("");
   const [selectedFamilyId, setSelectedFamilyId] = useState(null);
-  const [familyPaymentModal, setFamilyPaymentModal] = useState(null);
-  const [familyPayment, setFamilyPayment] = useState({ amount: "", method: "Cash", date: today(), note: "" });
   const [receiptModal, setReceiptModal] = useState(null);
   const [cameraActive, setCameraActive] = useState(false);
   const [teacherForm, setTeacherForm] = useState({ program: "juniors", name: "", levels: [], monthlyRate: "" });
@@ -442,8 +446,11 @@ export default function App() {
   const [mailingCopyMsg, setMailingCopyMsg] = useState("");
   const videoRef = useRef(null); const streamRef = useRef(null);
   const [semesters, setSemesters] = useState([]);
+  const [semesterPricing, setSemesterPricing] = useState([]);
   const [selectedSemesterId, setSelectedSemesterId] = useState("all");
   const [semesterSummary, setSemesterSummary] = useState({ funds_received: 0, funds_subsidized: 0, funds_owed: 0 });
+  const [semesterFormOpen, setSemesterFormOpen] = useState(null);
+  const [semesterForm, setSemesterForm] = useState({ academicYear: "", term: 1, label: "", startDate: "", endDate: "", isCurrent: false, pricing: { 1: "210", 2: "190", 3: "170", 4: "150" } });
   const [studentListRows, setStudentListRows] = useState([]);
   const [studentSearch, setStudentSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -506,6 +513,8 @@ export default function App() {
           const current = (semRows || []).find(s => s.is_current);
           if (current) setSelectedSemesterId(current.id);
         }
+        const { data: pricingRows, error: pricingErr } = await supabase.from("semester_junior_pricing").select("*");
+        if (!pricingErr) setSemesterPricing(pricingRows || []);
       } catch { setDbError("Could not connect to database. Check your Supabase credentials."); }
       setLoading(false);
     }
@@ -574,10 +583,11 @@ export default function App() {
   const isJunior = form.program === "juniors";
   const editingEnrollment = form.editingEnrollId ? enrollments.find(e => e.id === form.editingEnrollId) : null;
   const editingPaymentCount = editingEnrollment ? (editingEnrollment.paymentHistory || []).length : 0;
-  const currentAdultTeachers = adultTeachers[form.program] || [];
+  const currentSemesterIdForTeachers = (semesters.find(s => s.is_current) || {}).id;
+  const currentAdultTeachers = (adultTeachers[form.program] || []).filter(t => t.semesterId === currentSemesterIdForTeachers);
   const selectedAdultLevelIndex = getAdultLevelIndex(form.program, form.levelName || form.level);
   const eligibleTeachers = isJunior
-    ? (form.level !== "" ? juniorTeachers.filter(t => t.levels.includes(parseInt(form.level))) : [])
+    ? (form.level !== "" ? juniorTeachers.filter(t => t.levels.includes(parseInt(form.level)) && t.semesterId === currentSemesterIdForTeachers) : [])
     : form.program === "sisters"
       ? (selectedAdultLevelIndex >= 0 ? currentAdultTeachers.filter(t => (t.levels || []).includes(selectedAdultLevelIndex)) : [])
       : currentAdultTeachers;
@@ -685,7 +695,8 @@ export default function App() {
 
   function buildEnrollmentPaymentValues(program, rate, existingPaymentHistory = []) {
     const normalizedRate = roundMoney(rate || 0);
-    const semesterTotal = program === "juniors" ? getJuniorBaseRate(1) : getAdultProgramTotal(program, normalizedRate, semesterMonths);
+    const currentSemesterForPricing = semesters.find(s => s.is_current);
+    const semesterTotal = program === "juniors" ? getJuniorBaseRate(1, currentSemesterForPricing ? currentSemesterForPricing.id : null, semesterPricing) : getAdultProgramTotal(program, normalizedRate, semesterMonths);
     const hasMultipleRecordedPayments = existingPaymentHistory.length > 1;
     let paymentMethod = form.paymentMethod;
     let paymentHistory = [];
@@ -796,6 +807,46 @@ export default function App() {
   }
   function cancelHoldError() { setHoldError(null); setSaving(false); }
 
+  async function reloadSemesters() {
+    const { data: semRows } = await supabase.from("semesters").select("*").order("academic_year", { ascending: true }).order("term", { ascending: true });
+    setSemesters(semRows || []);
+    const { data: pricingRows } = await supabase.from("semester_junior_pricing").select("*");
+    setSemesterPricing(pricingRows || []);
+  }
+
+  function openAddSemester() {
+    setSemesterForm({ academicYear: "", term: 1, label: "", startDate: "", endDate: "", isCurrent: false, pricing: { 1: "210", 2: "190", 3: "170", 4: "150" } });
+    setTeacherForm({ program: "juniors", name: "", levels: [], monthlyRate: "" }); setEditingTeacherId(null); setTeacherMsg("");
+    setSemesterFormOpen("new");
+  }
+
+  function openEditSemester(sem) {
+    const pricing = { 1: "210", 2: "190", 3: "170", 4: "150" };
+    semesterPricing.filter(p => p.semester_id === sem.id).forEach(r => { pricing[r.child_count] = String(r.rate); });
+    setSemesterForm({ academicYear: sem.academic_year, term: sem.term, label: sem.label, startDate: sem.start_date || "", endDate: sem.end_date || "", isCurrent: sem.is_current, pricing });
+    setTeacherForm({ program: "juniors", name: "", levels: [], monthlyRate: "" }); setEditingTeacherId(null); setTeacherMsg("");
+    setSemesterFormOpen(sem.id);
+  }
+
+  async function saveSemester() {
+    if (!semesterForm.academicYear || !semesterForm.label) { alert("Academic year and label are required."); return; }
+    if (!semesterForm.startDate || !semesterForm.endDate) { alert("Start and end date are both required."); return; }
+    if (semesterForm.endDate < semesterForm.startDate) { alert("End date must be on or after the start date."); return; }
+    setSaving(true);
+    try {
+      const id = semesterFormOpen === "new" ? uid() : semesterFormOpen;
+      if (semesterForm.isCurrent) { await supabase.from("semesters").update({ is_current: false }).eq("is_current", true); }
+      const { error } = await supabase.from("semesters").upsert({ id, academic_year: semesterForm.academicYear, term: parseInt(semesterForm.term), label: semesterForm.label, start_date: semesterForm.startDate, end_date: semesterForm.endDate, is_current: semesterForm.isCurrent });
+      if (error) throw error;
+      const pricingUpserts = [1, 2, 3, 4].map(n => ({ semester_id: id, child_count: n, rate: Math.round((parseFloat(semesterForm.pricing[n]) || 0) * 100) / 100 }));
+      const { error: pErr } = await supabase.from("semester_junior_pricing").upsert(pricingUpserts, { onConflict: "semester_id,child_count" });
+      if (pErr) throw pErr;
+      await reloadSemesters();
+      if (semesterFormOpen === "new") setSemesterFormOpen(id); else setSemesterFormOpen(null);
+    } catch (err) { alert("Error saving semester: " + (err.message || JSON.stringify(err))); }
+    setSaving(false);
+  }
+
   async function recordLedgerPayment() {
     const amt = Math.round((parseFloat(newPayment.amount) || 0) * 100) / 100;
     if (!amt || amt <= 0) { alert("Enter a valid amount."); return; }
@@ -879,47 +930,15 @@ export default function App() {
     setSaving(false);
   }
 
-  async function addFamilyPayment() {
-    const fam = families.find(f => f.id === familyPaymentModal?.familyId);
-    const amt = roundMoney(parseFloat(familyPayment.amount) || 0);
-    if (!fam) return;
-    if (!amt || amt <= 0) { alert("Enter a valid amount."); return; }
-    const billing = calcFamilyBilling(fam, persons, enrollments);
-    if (billing.balance <= 0) { alert("This family has no outstanding balance."); return; }
-
-    setSaving(true);
-    let remaining = Math.min(amt, billing.balance);
-    const touched = [];
-    const newEnrollments = enrollments.map(e => {
-      if (remaining <= 0) return e;
-      const line = billing.lineItems.find(item => item.enrollmentId === e.id);
-      if (!line || line.balance <= 0) return e;
-      const applied = roundMoney(Math.min(remaining, line.balance));
-      remaining = roundMoney(remaining - applied);
-      const entry = { id: uid(), date: familyPayment.date, amount: applied, method: familyPayment.method, note: familyPayment.note || `Family payment — ${fam.name || "Family"}`, type: "family" };
-      const updated = normalizeEnrollmentRecord({ ...e, paymentHistory: [...(e.paymentHistory || []), entry] });
-      touched.push(updated);
-      return updated;
-    });
-
-    try {
-      if (touched.length) {
-        await Promise.all(touched.map(enrollment => supabase.from("enrollments").upsert(mapEnrollmentToDb(enrollment))));
-        setEnrollments(newEnrollments);
-      }
-    } catch (err) { alert("Error saving family payment: " + (err.message || JSON.stringify(err))); }
-    setFamilyPayment({ amount: "", method: "Cash", date: today(), note: "" });
-    setFamilyPaymentModal(null);
-    setSaving(false);
-  }
-
   async function deleteEnrollment(enrollmentId) {
-    if (!window.confirm("Delete this enrollment? This cannot be undone.")) return; setSaving(true);
+    if (!window.confirm("Delete this enrollment? This will also permanently delete every payment record tied to it. This cannot be undone.")) return; setSaving(true);
     try {
       const enroll = enrollments.find(e => e.id === enrollmentId); if (!enroll) return;
+      const { error: payDelErr } = await supabase.from("payments").delete().eq("enrollment_id", enrollmentId); if (payDelErr) throw payDelErr;
       const { error: eErr } = await supabase.from("enrollments").delete().eq("id", enrollmentId); if (eErr) throw eErr;
       const newEnrollments = enrollments.filter(e => e.id !== enrollmentId); setEnrollments(newEnrollments);
       if (!newEnrollments.some(e => e.personId === enroll.personId)) {
+        const { error: payDelErr2 } = await supabase.from("payments").delete().eq("person_id", enroll.personId); if (payDelErr2) throw payDelErr2;
         const { error: pErr } = await supabase.from("persons").delete().eq("id", enroll.personId); if (pErr) throw pErr;
         setPersons(prev => prev.filter(p => p.id !== enroll.personId));
         if (enroll.program === "juniors") {
@@ -956,17 +975,18 @@ export default function App() {
   }
 
   async function saveTeacher() {
+    if (semesterFormOpen === "new") { setTeacherMsg("Save the semester first before adding teachers."); return; }
     if (!teacherForm.name.trim()) { setTeacherMsg("Name required."); return; }
     if (programUsesTeacherLevels(teacherForm.program) && !teacherForm.levels.length) { setTeacherMsg("Assign at least one level."); return; }
     if (teacherForm.program !== "juniors" && !teacherForm.monthlyRate) { setTeacherMsg(isFixedAdultPriceProgram(teacherForm.program) ? "Fixed fee required." : "Monthly rate required."); return; }
     setSaving(true);
-    const t = { id: editingTeacherId || uid(), name: teacherForm.name, levels: teacherForm.levels, monthlyRate: parseFloat(teacherForm.monthlyRate) || 0 };
+    const t = { id: editingTeacherId || uid(), name: teacherForm.name, levels: teacherForm.levels, monthlyRate: parseFloat(teacherForm.monthlyRate) || 0, semesterId: semesterFormOpen };
     try {
-      const { error } = await supabase.from("teachers").upsert({ id: t.id, program: teacherForm.program, name: t.name, levels: programUsesTeacherLevels(teacherForm.program) ? t.levels : [], monthly_rate: teacherForm.program === "juniors" ? null : t.monthlyRate });
+      const { error } = await supabase.from("teachers").upsert({ id: t.id, program: teacherForm.program, name: t.name, levels: programUsesTeacherLevels(teacherForm.program) ? t.levels : [], monthly_rate: teacherForm.program === "juniors" ? null : t.monthlyRate, semester_id: semesterFormOpen });
       if (error) throw error;
       if (teacherForm.program === "juniors") setJuniorTeachers(p => editingTeacherId ? p.map(x => x.id === editingTeacherId ? t : x) : [...p, t]);
       else setAdultTeachers(p => ({ ...p, [teacherForm.program]: editingTeacherId ? (p[teacherForm.program] || []).map(x => x.id === editingTeacherId ? t : x) : [...(p[teacherForm.program] || []), t] }));
-      setTeacherMsg(editingTeacherId ? "Updated" : "Added"); setTeacherForm({ program: "juniors", name: "", levels: [], monthlyRate: "" }); setEditingTeacherId(null);
+      setTeacherMsg(editingTeacherId ? "Updated" : "Added"); setTeacherForm({ program: teacherForm.program, name: "", levels: [], monthlyRate: "" }); setEditingTeacherId(null);
     } catch { setTeacherMsg("Could not save teacher."); }
     setSaving(false); setTimeout(() => setTeacherMsg(""), 2500);
   }
@@ -1001,7 +1021,6 @@ export default function App() {
       return dashboardSort.direction === "asc" ? fallback : -fallback;
     });
   };
-  const totalOutstanding = families.reduce((a, fam) => a + Math.max(0, calcFamilyBilling(fam, persons, enrollments, semesterMonths).balance), 0);
 
   if (authLoading) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#f8f6f1" }}><div style={{ textAlign: "center" }}><img src={LOGO_URL} alt="Tarteel" style={{ width: 72, height: 72, objectFit: "contain", borderRadius: 10, opacity: 0.85 }} /><div style={{ marginTop: 14, fontSize: 16, color: "#aaa" }}>Loading...</div></div></div>;
   if (!session) return <LoginScreen />;
@@ -1418,30 +1437,43 @@ export default function App() {
         <p style={{ color: "#aaa", fontSize: 13, marginBottom: 14 }}>{`${families.length} ${families.length === 1 ? "family" : "families"} — Tarteel Juniors`}</p>
         {families.length === 0 ? <div className="card" style={{ textAlign: "center", padding: 40, color: "#ccc" }}>No families yet.</div>
           : families.map(fam => {
-            const billing = calcFamilyBilling(fam, persons, enrollments, semesterMonths); const isOpen = selectedFamilyId === fam.id; const hasSavings = billing.savings > 0;
-            const familyLineItemMap = new Map(billing.lineItems.map(item => [item.enrollmentId, item]));
+            const familyJuniorSemesterIds = [...new Set(enrollments.filter(e => (fam.personIds || []).includes(e.personId) && e.active && e.program === "juniors").map(e => e.semesterId))];
+            const perSemesterBilling = familyJuniorSemesterIds.map(semId => ({ semester: semesters.find(s => s.id === semId), billing: calcFamilyBilling(fam, persons, enrollments, semId, semesterPricing) }));
+            const totalBalance = roundMoney(perSemesterBilling.reduce((a, x) => a + Math.max(0, x.billing.balance), 0));
+            const totalSavings = roundMoney(perSemesterBilling.reduce((a, x) => a + (x.billing.savings || 0), 0));
+            const currentSemester = semesters.find(s => s.is_current);
+            const isOpen = selectedFamilyId === fam.id; const hasSavings = totalSavings > 0;
+            const familyLineItemMap = new Map(perSemesterBilling.flatMap(x => x.billing.lineItems.map(item => [item.enrollmentId, item])));
             return (
               <div key={fam.id} style={{ marginBottom: 8 }}>
                 <div className={`card fr${isOpen ? " open" : ""}`} onClick={() => setSelectedFamilyId(isOpen ? null : fam.id)}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <div style={{ width: 38, height: 38, borderRadius: "50%", background: "#e8f5ee", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>👨‍👩‍👧</div>
                     <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 700, fontSize: 14 }}>{fam.name || "-"}</div><div style={{ fontSize: 12, color: "#999", display: "flex", gap: 10, flexWrap: "wrap" }}>{fam.phone && <span>📞 {fmtPhone(fam.phone)}</span>}{fam.email && <span>✉️ {fam.email}</span>}</div></div>
-                    <div style={{ textAlign: "right", flexShrink: 0 }}><span className={billing.balance > 0 ? "brr" : hasSavings ? "bgld" : "bgg"} style={{ fontSize: 12 }}>{billing.balance > 0 ? `$${billing.balance.toFixed(2)}` : hasSavings ? `Saved $${billing.savings.toFixed(2)}` : "Paid"}</span><div style={{ fontSize: 10, color: "#bbb", marginTop: 2 }}>{`${(fam.personIds && fam.personIds.length) || 0} children`}</div></div>
+                    <div style={{ textAlign: "right", flexShrink: 0 }}><span className={totalBalance > 0 ? "brr" : hasSavings ? "bgld" : "bgg"} style={{ fontSize: 12 }}>{totalBalance > 0 ? `$${totalBalance.toFixed(2)}` : hasSavings ? `Saved $${totalSavings.toFixed(2)}` : "Paid"}</span><div style={{ fontSize: 10, color: "#bbb", marginTop: 2 }}>{`${(fam.personIds && fam.personIds.length) || 0} children`}</div></div>
                     <div style={{ fontSize: 16, color: "#ccc", transition: "transform .2s", transform: isOpen ? "rotate(90deg)" : "none", flexShrink: 0 }}>{">"}</div>
                   </div>
                 </div>
                 {isOpen && (
                   <div className="fade" style={{ background: "#fff", border: "1px solid #e8f5ee", borderTop: "none", borderRadius: "0 0 12px 12px", padding: 16, marginTop: -4 }}>
-                    <div style={{ background: "#f8f6f1", borderRadius: 10, padding: 14, marginBottom: 14 }}>
-                      <div className="sec" style={{ marginBottom: 8 }}>Family Billing</div>
-                      {billing.lineItems.map((li, i) => <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "5px 0", borderBottom: "1px solid #eee" }}><span>{li.name}</span><strong>{`$${li.total.toFixed(2)}`}</strong></div>)}
-                      {billing.lineItems.length > 1 && billing.savings > 0 && <div style={{ fontSize: 11, color: "#aaa", marginTop: 4 }}>{`Family discount applied — Saved $${billing.savings.toFixed(2)}`}</div>}
-                      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontWeight: 700, fontSize: 13 }}><span>Total Owed</span><span>{`$${billing.totalOwed.toFixed(2)}`}</span></div>
-                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#888", marginTop: 2 }}><span>Total Paid</span><span>{`$${billing.totalPaid.toFixed(2)}`}</span></div>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontWeight: 700, fontSize: 14 }}><span>Balance</span><span style={{ color: billing.balance > 0 ? "var(--red)" : "var(--g)" }}>{`$${billing.balance.toFixed(2)}`}</span></div>
-                      {billing.savings > 0 && <div style={{ display: "flex", justifyContent: "space-between", marginTop: 2, fontWeight: 700, fontSize: 13 }}><span>Saved</span><span style={{ color: "var(--gold)" }}>{`$${billing.savings.toFixed(2)}`}</span></div>}
-                      {billing.balance > 0 && <button className="btn bgold bsm" style={{ marginTop: 10 }} onClick={() => setFamilyPaymentModal({ familyId: fam.id })}>Record Family Payment</button>}
-                    </div>
+                    {perSemesterBilling.map(({ semester, billing }) => (
+                      <div key={semester ? semester.id : "unknown"} style={{ background: "#f8f6f1", borderRadius: 10, padding: 14, marginBottom: 10 }}>
+                        <div className="sec" style={{ marginBottom: 8 }}>{`Family Billing — ${semester ? semester.label : "Unknown Semester"}`}</div>
+                        {billing.lineItems.map((li, i) => <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "5px 0", borderBottom: "1px solid #eee" }}><span>{li.name}</span><strong>{`$${li.total.toFixed(2)}`}</strong></div>)}
+                        {billing.lineItems.length > 1 && billing.savings > 0 && <div style={{ fontSize: 11, color: "#aaa", marginTop: 4 }}>{`Family discount applied — Saved $${billing.savings.toFixed(2)}`}</div>}
+                        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontWeight: 700, fontSize: 13 }}><span>Total Owed</span><span>{`$${billing.totalOwed.toFixed(2)}`}</span></div>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#888", marginTop: 2 }}><span>Total Paid</span><span>{`$${billing.totalPaid.toFixed(2)}`}</span></div>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontWeight: 700, fontSize: 14 }}><span>Balance</span><span style={{ color: billing.balance > 0 ? "var(--red)" : "var(--g)" }}>{`$${billing.balance.toFixed(2)}`}</span></div>
+                        {billing.savings > 0 && <div style={{ display: "flex", justifyContent: "space-between", marginTop: 2, fontWeight: 700, fontSize: 13 }}><span>Saved</span><span style={{ color: "var(--gold)" }}>{`$${billing.savings.toFixed(2)}`}</span></div>}
+                        {billing.balance > 0 && semester && currentSemester && semester.id === currentSemester.id && <button className="btn bgold bsm" style={{ marginTop: 10 }} onClick={() => { setPaymentSearchMode("family"); setSelectedPaymentTarget({ type: "family", familyId: fam.id, name: fam.name || "Family", balance: billing.balance }); setView("payments"); }}>Record Family Payment</button>}
+                      </div>
+                    ))}
+                    {perSemesterBilling.length > 1 && (
+                      <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 4px", fontWeight: 700, fontSize: 14, borderTop: "2px solid #eee", marginBottom: 10 }}>
+                        <span>Total Balance (All Semesters)</span>
+                        <span style={{ color: totalBalance > 0 ? "var(--red)" : "var(--g)" }}>{`$${totalBalance.toFixed(2)}`}</span>
+                      </div>
+                    )}
                     {(fam.personIds || []).map(pid => {
                       const person = persons.find(p => p.id === pid); if (!person) return null;
                       const pes = enrollments.filter(e => e.personId === pid && e.active);
@@ -1535,28 +1567,6 @@ export default function App() {
       </div>
     );
 
-    if (view === "teachers") return (
-      <div className="fade" style={{ padding: pad }}>
-        <h1 style={{ fontSize: isMobile ? 20 : 24, fontWeight: 700, marginBottom: 4 }}>Teachers</h1>
-        <p style={{ color: "#aaa", fontSize: 13, marginBottom: 16 }}>Manage teachers and levels</p>
-        <div style={{ display: isMobile ? "block" : "grid", gridTemplateColumns: "1fr 300px", gap: 18 }}>
-          <div>
-            {["brothers", "sisters"].map(prog => <div key={prog} className="card" style={{ marginBottom: 14, borderTop: `3px solid ${prog === "brothers" ? "var(--bro)" : "var(--sis)"}` }}><div className="sec">{`${PROGRAMS[prog]} — Levels`}</div><div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }}>{(adultLevels[prog] || []).map((l, i) => <span key={i} className="lt">{l}</span>)}</div><div style={{ fontSize: 12, color: "#888" }}>Adult levels are fixed to Level 1 through Level 5.</div></div>)}
-            {[{ prog: "juniors", tList: juniorTeachers, color: "var(--g)" }, { prog: "brothers", tList: adultTeachers.brothers || [], color: "var(--bro)" }, { prog: "sisters", tList: adultTeachers.sisters || [], color: "var(--sis)" }].map(item => <div key={item.prog} className="card" style={{ marginBottom: 12, borderTop: `3px solid ${item.color}` }}><div className="sec">{`${PROGRAMS[item.prog]} — Teachers`}</div>{!item.tList.length ? <div style={{ color: "#ccc", fontSize: 13 }}>No teachers yet.</div> : <div style={{ overflowX: "auto" }}><table className="tbl" style={{ minWidth: 320 }}><thead><tr><th>Name</th><th>{item.prog === "juniors" ? "Levels" : item.prog === "sisters" ? "Levels / Fee" : "Fee"}</th><th>Students</th><th></th></tr></thead><tbody>{item.tList.map(t => { const cnt = enrollments.filter(e => e.teacherId === t.id && e.active).length; return <tr key={t.id}><td style={{ fontWeight: 600 }}>{t.name}</td><td>{item.prog === "juniors" ? <div style={{ display: "flex", gap: 3 }}>{(t.levels || []).sort((a, b) => a - b).map(li => <span key={li} className="bgg" style={{ fontSize: 10 }}>{JUNIOR_LEVELS[li]}</span>)}</div> : item.prog === "sisters" ? <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>{(t.levels || []).sort((a, b) => a - b).map(li => <span key={li} className="bgg" style={{ fontSize: 10 }}>{adultLevels.sisters[li] || `Level ${li + 1}`}</span>)}<span className="bgry">{getAdultTeacherRateLabel(item.prog, t.monthlyRate)}</span></div> : <span className="bgry">{getAdultTeacherRateLabel(item.prog, t.monthlyRate)}</span>}</td><td><span className="bgry">{cnt}</span></td><td><div style={{ display: "flex", gap: 4 }}><button className="btn bg bsm" onClick={() => { setTeacherForm({ program: item.prog, name: t.name, levels: t.levels || [], monthlyRate: t.monthlyRate || "" }); setEditingTeacherId(t.id); }}>Edit</button><button className="btn bd bsm" onClick={() => deleteTeacher(item.prog, t.id)}>X</button></div></td></tr>; })}</tbody></table></div>}</div>)}
-          </div>
-          <div className="card" style={{ position: isMobile ? "static" : "sticky", top: 20, marginTop: isMobile ? 14 : 0 }}>
-            <div className="sec">{editingTeacherId ? "Edit Teacher" : "Add Teacher"}</div>
-            <div className="fg" style={{ marginBottom: 12 }}><label>Program</label><select value={teacherForm.program} onChange={e => setTeacherForm(p => ({ ...p, program: e.target.value, levels: [], monthlyRate: "" }))}>{PROGRAM_KEYS.map(pk => <option key={pk} value={pk}>{PROGRAMS[pk]}</option>)}</select></div>
-            <div className="fg" style={{ marginBottom: 12 }}><label>Full Name *</label><input value={teacherForm.name} onChange={e => setTeacherForm(p => ({ ...p, name: e.target.value }))} placeholder="e.g. Ust. Abdullah" /></div>
-            {programUsesTeacherLevels(teacherForm.program) && <div style={{ marginBottom: 12 }}><div style={{ fontSize: 11, fontWeight: 700, color: "#888", textTransform: "uppercase", marginBottom: 7 }}>Assign Levels *</div><div style={{ display: "flex", gap: 7 }}>{(teacherForm.program === "juniors" ? JUNIOR_LEVELS : adultLevels.sisters).map((l, i) => <div key={i} className={`lchip${teacherForm.levels.includes(i) ? " on" : ""}`} onClick={() => setTeacherForm(p => ({ ...p, levels: p.levels.includes(i) ? p.levels.filter(x => x !== i) : [...p.levels, i] }))} title={l}>{i + 1}</div>)}</div></div>}
-            {teacherForm.program !== "juniors" && <div className="fg" style={{ marginBottom: 12 }}><label>{isFixedAdultPriceProgram(teacherForm.program) ? "Fixed Fee ($) *" : "Monthly Rate ($) *"}</label><input type="number" value={teacherForm.monthlyRate} onChange={e => setTeacherForm(p => ({ ...p, monthlyRate: e.target.value }))} placeholder={isFixedAdultPriceProgram(teacherForm.program) ? "e.g. 250" : "e.g. 50 or 100"} /></div>}
-            {teacherMsg && <div style={{ fontSize: 13, color: "var(--g)", background: "#f0faf4", padding: "7px 12px", borderRadius: 8, marginBottom: 10, fontWeight: 600 }}>{teacherMsg}</div>}
-            <div style={{ display: "flex", gap: 7 }}><button className="btn bp" onClick={saveTeacher}>{editingTeacherId ? "Save" : "Add Teacher"}</button>{editingTeacherId && <button className="btn bg" onClick={() => { setTeacherForm({ program: "juniors", name: "", levels: [], monthlyRate: "" }); setEditingTeacherId(null); setTeacherMsg(""); }}>Cancel</button>}</div>
-          </div>
-        </div>
-      </div>
-    );
-
     if (view === "mailing") {
       const emailMap = {};
       const mailingTeacherOptions = (mailingProgramFilter === "juniors" ? juniorTeachers : mailingProgramFilter === "brothers" ? (adultTeachers.brothers || []) : mailingProgramFilter === "sisters" ? (adultTeachers.sisters || []) : [...juniorTeachers, ...(adultTeachers.brothers || []), ...(adultTeachers.sisters || [])]).map(t => ({ value: t.id, label: t.name })).sort((a, b) => a.label.localeCompare(b.label));
@@ -1593,6 +1603,19 @@ export default function App() {
         <h1 style={{ fontSize: isMobile ? 20 : 24, fontWeight: 700, marginBottom: 4 }}>Settings</h1>
         <p style={{ color: "#aaa", fontSize: 13, marginBottom: 20 }}>Configure semester and school info</p>
         <div className="card" style={{ marginBottom: 14 }}><div className="sec">Current Semester</div><div className="fg" style={{ marginBottom: 12 }}><label>Semester Name</label><input value={semesterLabel} onChange={e => setSemesterLabel(e.target.value)} placeholder="e.g. Fall 2025 or Winter 2026" /></div><div className="fg"><label>Semester Length (months)</label><input type="number" min={1} max={12} value={semesterMonths} onChange={e => setSemesterMonths(parseInt(e.target.value) || 5)} /></div></div>
+
+        <div className="card" style={{ marginBottom: 14 }}>
+          <div className="sec" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><span>Semester Management</span><button className="btn bp bsm" onClick={openAddSemester}>+ Add Semester</button></div>
+          {semesters.length === 0 ? <div style={{ color: "#aaa", fontSize: 13, padding: 8 }}>No semesters yet.</div> : semesters.map(sem => (
+            <div key={sem.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #eee" }}>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>{sem.label}{sem.is_current && <span style={{ fontSize: 10, background: "var(--g)", color: "#fff", padding: "2px 6px", borderRadius: 4, marginLeft: 6 }}>Current</span>}</div>
+                <div style={{ fontSize: 11, color: "#999" }}>{sem.start_date && sem.end_date ? `${fmtDate(sem.start_date)} — ${fmtDate(sem.end_date)}` : "No dates set"}</div>
+              </div>
+              <button className="btn bg bxs" onClick={() => openEditSemester(sem)}>Edit</button>
+            </div>
+          ))}
+        </div>
         <div className="card" style={{ marginBottom: 14 }}><div className="sec">Database</div><div style={{ fontSize: 13, color: "#888", marginBottom: 6 }}>Connected to Supabase</div><div style={{ fontSize: 12, color: "#bbb" }}>{`${persons.length} persons · ${families.length} families · ${enrollments.length} enrollments`}</div></div>
         <div className="card"><div className="sec">Account</div><div style={{ fontSize: 13, color: "#888", marginBottom: 12 }}>Signed in as <strong>{session.user.email}</strong></div><button className="btn bd bsm" onClick={handleLogout}>Sign Out</button></div>
       </div>
@@ -1612,14 +1635,83 @@ export default function App() {
         <div style={{ display: "flex", minHeight: "100vh" }}><Sidebar /><main style={{ flex: 1, overflowY: "auto" }}>{renderMain()}</main></div>
       )}
 
-      {familyPaymentModal && (() => {
-        const fam = families.find(f => f.id === familyPaymentModal.familyId);
-        const billing = fam ? calcFamilyBilling(fam, persons, enrollments) : null;
-        if (!fam || !billing) return null;
-        return <div className="mbg" onClick={() => setFamilyPaymentModal(null)}><div className="modal fade" onClick={e => e.stopPropagation()}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}><h2 style={{ fontSize: 19, fontWeight: 700 }}>Record Family Payment</h2><button className="btn" onClick={() => setFamilyPaymentModal(null)} style={{ fontSize: 20, color: "#bbb", padding: "0 6px" }}>x</button></div><div style={{ background: "#f8f6f1", borderRadius: 10, padding: 12, marginBottom: 14 }}><div style={{ fontWeight: 700, marginBottom: 3 }}>{fam.name || "Family"}</div><div style={{ fontSize: 13, color: "#888" }}>{`${billing.lineItems.length} ${billing.lineItems.length === 1 ? "child" : "children"} · Balance: `}<span style={{ color: "var(--red)", fontWeight: 700 }}>{`$${billing.balance.toFixed(2)}`}</span></div><div style={{ fontSize: 11, color: "#aaa", marginTop: 5 }}>One payment is applied against the family balance automatically.</div></div><div className="r2" style={{ marginBottom: 12 }}><div className="fg"><label>Amount ($) *</label><MoneyInput value={familyPayment.amount} onChange={v => setFamilyPayment(p => ({ ...p, amount: v }))} placeholder={`Up to $${billing.balance.toFixed(2)}`} autoFocus /></div><div className="fg"><label>Date *</label><input type="date" value={familyPayment.date} onChange={e => setFamilyPayment(p => ({ ...p, date: e.target.value }))} /></div></div><div className="fg" style={{ marginBottom: 12 }}><label>Method</label><select value={familyPayment.method} onChange={e => setFamilyPayment(p => ({ ...p, method: e.target.value }))}>{PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}</select></div><div className="fg" style={{ marginBottom: 16 }}><label>Note</label><input value={familyPayment.note} onChange={e => setFamilyPayment(p => ({ ...p, note: e.target.value }))} placeholder="Optional" /></div><div style={{ display: "flex", gap: 8 }}><button className="btn bp" onClick={addFamilyPayment} disabled={saving}>{saving ? "Saving..." : "Confirm Payment"}</button><button className="btn bg" onClick={() => { setFamilyPaymentModal(null); setFamilyPayment({ amount: "", method: "Cash", date: today(), note: "" }); }}>Cancel</button></div></div></div>;
-      })()}
-
       {receiptModal && <ReceiptView person={receiptModal.person} enrollment={receiptModal.enrollment} payment={receiptModal.payment} receiptNum={receiptModal.receiptNum} semesterLabel={semesterLabel} onClose={() => setReceiptModal(null)} />}
+
+      {semesterFormOpen && (
+        <div className="mbg" onClick={() => setSemesterFormOpen(null)}>
+          <div className="modal fade" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+            <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 14 }}>{semesterFormOpen === "new" ? "Add Semester" : "Edit Semester"}</h2>
+            <div className="r2" style={{ marginBottom: 12 }}>
+              <div className="fg"><label>Academic Year *</label><input value={semesterForm.academicYear} onChange={e => setSemesterForm(p => ({ ...p, academicYear: e.target.value }))} placeholder="2026-2027" /></div>
+              <div className="fg"><label>Term *</label><select value={semesterForm.term} onChange={e => setSemesterForm(p => ({ ...p, term: e.target.value }))}><option value={1}>1</option><option value={2}>2</option><option value={3}>3 (Summer)</option></select></div>
+            </div>
+            <div className="fg" style={{ marginBottom: 12 }}><label>Label *</label><input value={semesterForm.label} onChange={e => setSemesterForm(p => ({ ...p, label: e.target.value }))} placeholder="Fall 2026" /></div>
+            <div className="r2" style={{ marginBottom: 12 }}>
+              <div className="fg"><label>Start Date *</label><input type="date" value={semesterForm.startDate} onChange={e => setSemesterForm(p => ({ ...p, startDate: e.target.value }))} /></div>
+              <div className="fg"><label>End Date *</label><input type="date" value={semesterForm.endDate} onChange={e => setSemesterForm(p => ({ ...p, endDate: e.target.value }))} /></div>
+            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 16, fontSize: 13, color: "#777" }}><input type="checkbox" checked={semesterForm.isCurrent} onChange={e => setSemesterForm(p => ({ ...p, isCurrent: e.target.checked }))} />Set as current semester</label>
+            <div className="sec" style={{ marginBottom: 8 }}>Juniors Pricing (per child, this semester)</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 18 }}>
+              {[1, 2, 3, 4].map(n => (
+                <div className="fg" key={n}><label>{n === 4 ? "4+ children" : `${n} child${n > 1 ? "ren" : ""}`}</label><MoneyInput value={semesterForm.pricing[n]} onChange={v => setSemesterForm(p => ({ ...p, pricing: { ...p.pricing, [n]: v } }))} /></div>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: "#aaa", marginBottom: 14 }}>Rates here only apply to new enrollments created under this semester going forward — existing students already enrolled keep whatever rate they were originally charged.</div>
+
+            {semesterFormOpen === "new" ? (
+              <div style={{ fontSize: 12, color: "#aaa", marginBottom: 18 }}>Save this semester first to add its teachers.</div>
+            ) : (() => {
+              const editingSemester = semesters.find(s => s.id === semesterFormOpen);
+              const todayStr = new Date().toISOString().slice(0, 10);
+              const isRetired = !!(editingSemester && editingSemester.end_date && editingSemester.end_date < todayStr);
+              const teacherLists = { juniors: juniorTeachers.filter(t => t.semesterId === semesterFormOpen), brothers: (adultTeachers.brothers || []).filter(t => t.semesterId === semesterFormOpen), sisters: (adultTeachers.sisters || []).filter(t => t.semesterId === semesterFormOpen) };
+              return (
+                <div style={{ marginBottom: 18 }}>
+                  <div className="sec" style={{ marginBottom: 8 }}>{`Teachers${isRetired ? " (Archived)" : ""}`}</div>
+                  {isRetired && <div style={{ fontSize: 12, color: "#aaa", background: "#f8f6f1", padding: "8px 10px", borderRadius: 8, marginBottom: 10 }}>{`This semester ended on ${fmtDate(editingSemester.end_date)} — its teacher list is archived and can no longer be edited.`}</div>}
+                  <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                    {PROGRAM_KEYS.map(pk => <div key={pk} className={`ptab ${pk}${teacherForm.program === pk ? " on" : ""}`} onClick={() => setTeacherForm(p => ({ ...p, program: pk, levels: [], monthlyRate: "" }))}>{PROGRAMS[pk]}</div>)}
+                  </div>
+                  {!teacherLists[teacherForm.program].length ? <div style={{ color: "#ccc", fontSize: 13, marginBottom: 10 }}>No teachers yet.</div> : (
+                    <table className="tbl" style={{ marginBottom: 10 }}>
+                      <thead><tr><th>Name</th><th>{teacherForm.program === "juniors" ? "Levels" : teacherForm.program === "sisters" ? "Levels / Fee" : "Fee"}</th><th>Students</th>{!isRetired && <th></th>}</tr></thead>
+                      <tbody>
+                        {teacherLists[teacherForm.program].map(t => {
+                          const cnt = enrollments.filter(e => e.teacherId === t.id && e.active).length;
+                          return (
+                            <tr key={t.id}>
+                              <td style={{ fontWeight: 600 }}>{t.name}</td>
+                              <td>{teacherForm.program === "juniors" ? <div style={{ display: "flex", gap: 3 }}>{(t.levels || []).sort((a, b) => a - b).map(li => <span key={li} className="bgg" style={{ fontSize: 10 }}>{JUNIOR_LEVELS[li]}</span>)}</div> : teacherForm.program === "sisters" ? <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>{(t.levels || []).sort((a, b) => a - b).map(li => <span key={li} className="bgg" style={{ fontSize: 10 }}>{adultLevels.sisters[li] || `Level ${li + 1}`}</span>)}<span className="bgry">{getAdultTeacherRateLabel(teacherForm.program, t.monthlyRate)}</span></div> : <span className="bgry">{getAdultTeacherRateLabel(teacherForm.program, t.monthlyRate)}</span>}</td>
+                              <td><span className="bgry">{cnt}</span></td>
+                              {!isRetired && <td><div style={{ display: "flex", gap: 4 }}><button className="btn bg bxs" onClick={() => { setTeacherForm(p => ({ ...p, name: t.name, levels: t.levels || [], monthlyRate: t.monthlyRate || "" })); setEditingTeacherId(t.id); }}>Edit</button><button className="btn bd bxs" onClick={() => deleteTeacher(teacherForm.program, t.id)}>X</button></div></td>}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                  {!isRetired && (
+                    <div style={{ background: "#f8f6f1", borderRadius: 10, padding: 12 }}>
+                      <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 8 }}>{editingTeacherId ? "Edit Teacher" : "Add Teacher"}</div>
+                      <div className="fg" style={{ marginBottom: 10 }}><label>Full Name *</label><input value={teacherForm.name} onChange={e => setTeacherForm(p => ({ ...p, name: e.target.value }))} placeholder="e.g. Ust. Abdullah" /></div>
+                      {programUsesTeacherLevels(teacherForm.program) && <div style={{ marginBottom: 10 }}><div style={{ fontSize: 11, fontWeight: 700, color: "#888", textTransform: "uppercase", marginBottom: 7 }}>Assign Levels *</div><div style={{ display: "flex", gap: 7 }}>{(teacherForm.program === "juniors" ? JUNIOR_LEVELS : adultLevels.sisters).map((l, i) => <div key={i} className={`lchip${teacherForm.levels.includes(i) ? " on" : ""}`} onClick={() => setTeacherForm(p => ({ ...p, levels: p.levels.includes(i) ? p.levels.filter(x => x !== i) : [...p.levels, i] }))} title={l}>{i + 1}</div>)}</div></div>}
+                      {teacherForm.program !== "juniors" && <div className="fg" style={{ marginBottom: 10 }}><label>{isFixedAdultPriceProgram(teacherForm.program) ? "Fixed Fee ($) *" : "Monthly Rate ($) *"}</label><input type="number" value={teacherForm.monthlyRate} onChange={e => setTeacherForm(p => ({ ...p, monthlyRate: e.target.value }))} placeholder={isFixedAdultPriceProgram(teacherForm.program) ? "e.g. 250" : "e.g. 50 or 100"} /></div>}
+                      {teacherMsg && <div style={{ fontSize: 12, color: "var(--g)", marginBottom: 8, fontWeight: 600 }}>{teacherMsg}</div>}
+                      <div style={{ display: "flex", gap: 7 }}><button className="btn bp bsm" onClick={saveTeacher}>{editingTeacherId ? "Save" : "Add Teacher"}</button>{editingTeacherId && <button className="btn bg bsm" onClick={() => { setTeacherForm(p => ({ ...p, name: "", levels: [], monthlyRate: "" })); setEditingTeacherId(null); setTeacherMsg(""); }}>Cancel</button>}</div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn bp" onClick={saveSemester} disabled={saving}>{saving ? "Saving..." : "Save Semester"}</button>
+              <button className="btn bg" onClick={() => setSemesterFormOpen(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {followUpPrompt && (
         <div className="mbg" onClick={() => setFollowUpPrompt(null)}>
