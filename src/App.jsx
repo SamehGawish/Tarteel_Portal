@@ -95,7 +95,6 @@ const SCHOOL_ADDRESS = "251 Northwestern Ave, Ottawa, ON, K1Y 0M1";
 const DEFAULT_SEMESTER_LABEL = "Fall " + new Date().getFullYear();
 const DEFAULT_JUNIOR_TEACHERS = [{ id: "j1", name: "Ustadh Ibrahim Al-Sayed", levels: [0, 1] }, { id: "j2", name: "Ustadha Fatima Noor", levels: [1, 2] }, { id: "j3", name: "Ustadh Khalid Mansour", levels: [2, 3] }, { id: "j4", name: "Ustadha Maryam Hasan", levels: [3, 4] }, { id: "j5", name: "Ustadh Yusuf Al-Rashid", levels: [0, 2, 4] }];
 const DEFAULT_ADULT_TEACHERS = { brothers: [{ id: "b1", name: "Sh. Saad", monthlyRate: 200 }, { id: "b2", name: "Sh. Abu Kudus", monthlyRate: 300 }, { id: "b3", name: "Ust. Abdullah", monthlyRate: 50 }], sisters: [{ id: "s1", name: "Ust. Reham", monthlyRate: 50 }, { id: "s2", name: "Ust. Asmaa", monthlyRate: 50 }, { id: "s3", name: "Ust. Masa", monthlyRate: 100 }, { id: "s4", name: "Ust. Kauthar", monthlyRate: 100 }, { id: "s5", name: "Ust. Karima", monthlyRate: 100 }] };
-const BROTHERS_RATE_OVERRIDES = { b1: 200, b2: 300 };
 const DEFAULT_ADULT_LEVELS = { brothers: ["Level 1", "Level 2", "Level 3", "Level 4", "Level 5"], sisters: ["Level 1", "Level 2", "Level 3", "Level 4", "Level 5"] };
 const STORAGE_KEYS = { semesterLabel: "tarteel:semester-label", semesterMonths: "tarteel:semester-months", juniorTeachers: "tarteel:junior-teachers", adultTeachers: "tarteel:adult-teachers", adultLevels: "tarteel:adult-levels" };
 const NAV_ITEMS = [
@@ -127,16 +126,8 @@ function getJuniorBaseRate(n, semesterId, pricingRows) {
 function roundMoney(v) { return Math.round((Number(v) || 0) * 100) / 100; }
 function getPaymentTypeLabel(paymentType) { return paymentType === "full" ? "Paid Full" : paymentType === "partial" ? "Partially Paid" : paymentType === "instalment" ? "Instalment" : "Waived"; }
 function isFixedAdultPriceProgram(program) { return program === "brothers" || program === "sisters"; }
-function getBrothersFixedRate(teacherId, teacherName, fallbackRate = 0) {
-  const normalizedName = String(teacherName || "").toLowerCase().trim();
-  if (BROTHERS_RATE_OVERRIDES[teacherId] != null) return BROTHERS_RATE_OVERRIDES[teacherId];
-  if (normalizedName === "sh. saad") return 200;
-  if (normalizedName === "sh. abu kudus") return 300;
-  return roundMoney(fallbackRate);
-}
 function getEnrollmentConfiguredRate(enrollment) {
   if (!enrollment) return 0;
-  if (enrollment.program === "brothers") return getBrothersFixedRate(enrollment.teacherId, enrollment.teacherName, enrollment.monthlyRate || 0);
   return roundMoney(enrollment.monthlyRate || 0);
 }
 function getEnrollmentBaseTotal(enrollment) {
@@ -174,15 +165,6 @@ function getEnrollmentLevelLabel(e) {
 function getAdultLevelIndex(program, label) {
   const normalizedLabel = normalizeAdultLevelLabel(label);
   return (DEFAULT_ADULT_LEVELS[program] || []).findIndex(level => level === normalizedLabel);
-}
-function applyBrothersRateOverrides(list) {
-  return (list || []).map(teacher => {
-    const normalizedName = String(teacher.name || "").toLowerCase().trim();
-    const byId = BROTHERS_RATE_OVERRIDES[teacher.id];
-    const byName = normalizedName === "sh. saad" ? 200 : normalizedName === "sh. abu kudus" ? 300 : null;
-    const fixedRate = byId != null ? byId : byName;
-    return fixedRate == null ? teacher : { ...teacher, monthlyRate: fixedRate };
-  });
 }
 function readStoredJson(key, fallback) { try { const r = window.localStorage.getItem(key); return r ? JSON.parse(r) : fallback; } catch { return fallback; } }
 function readStoredString(key, fallback) { try { return window.localStorage.getItem(key) || fallback; } catch { return fallback; } }
@@ -420,10 +402,7 @@ export default function App() {
   const [semesterLabel, setSemesterLabel] = useState(() => readStoredString(STORAGE_KEYS.semesterLabel, DEFAULT_SEMESTER_LABEL));
   const [semesterMonths, setSemesterMonths] = useState(() => readStoredNumber(STORAGE_KEYS.semesterMonths, SEMESTER_MONTHS_DEFAULT));
   const [juniorTeachers, setJuniorTeachers] = useState(() => readStoredJson(STORAGE_KEYS.juniorTeachers, DEFAULT_JUNIOR_TEACHERS));
-  const [adultTeachers, setAdultTeachers] = useState(() => {
-    const stored = readStoredJson(STORAGE_KEYS.adultTeachers, DEFAULT_ADULT_TEACHERS);
-    return { ...stored, brothers: applyBrothersRateOverrides(stored.brothers || []) };
-  });
+  const [adultTeachers, setAdultTeachers] = useState(() => readStoredJson(STORAGE_KEYS.adultTeachers, DEFAULT_ADULT_TEACHERS));
   const adultLevels = DEFAULT_ADULT_LEVELS;
   const [form, setForm] = useState(INIT_FORM);
   const [dobInput, setDobInput] = useState("");
@@ -505,7 +484,7 @@ export default function App() {
         if (!tErr) {
           const ts = buildTeacherState(tRows || []);
           setJuniorTeachers(ts.juniors);
-          setAdultTeachers({ ...ts.adults, brothers: applyBrothersRateOverrides(ts.adults.brothers || []) });
+          setAdultTeachers(ts.adults);
         }
         const { data: semRows, error: semErr } = await supabase.from("semesters").select("*").order("academic_year", { ascending: true }).order("term", { ascending: true });
         if (!semErr) {
@@ -636,7 +615,7 @@ export default function App() {
     const ql = (query || "").toLowerCase().replace(/[\s\-(). ]/g, "");
     if (!ql && !pf && !lf && !gf && !tf && !payf) { setLookupResults([]); return; }
     setLookupResults(persons.filter(p => {
-      const pes = enrollments.filter(e => e.personId === p.id && e.active);
+      const pes = enrollments.filter(e => e.personId === p.id && e.active && (selectedSemesterId === "all" || e.semesterId === selectedSemesterId));
       if (pf && !pes.some(e => e.program === pf)) return false;
       if (lf && !pes.some(e => getEnrollmentLookupLevelValue(e) === lf)) return false;
       if (gf && p.gender !== gf) return false;
@@ -659,7 +638,7 @@ export default function App() {
     const popup = window.open("", "_blank", "width=960,height=1200"); if (!popup) { alert("Please allow pop-ups to print."); return; }
     const filters = [lookupQuery ? `Search: ${lookupQuery}` : null, lookupProgramFilter ? `Program: ${PROGRAMS[lookupProgramFilter]}` : null, lookupGenderFilter ? `Gender: ${lookupGenderFilter}` : null, lookupPaymentFilter ? `Payment: ${getPaymentTypeLabel(lookupPaymentFilter)}` : null].filter(Boolean);
     const cards = lookupResults.map(person => {
-      const pes = enrollments.filter(e => e.personId === person.id && e.active);
+      const pes = enrollments.filter(e => e.personId === person.id && e.active && (selectedSemesterId === "all" || e.semesterId === selectedSemesterId));
       return `<section class="card"><div class="title">${escapeHtml(`${person.firstName} ${person.lastName}`)} <span class="student-num">${escapeHtml(person.studentNum || "-")}</span></div><div class="meta">${escapeHtml(`${person.gender || "-"} · Age ${person.age || "-"}${person.dateOfBirth ? " · DOB: " + fmtDob(person.dateOfBirth) : ""}`)}</div><div class="meta">${escapeHtml(person.phone ? fmtPhone(person.phone) : "")}</div><div class="meta">${escapeHtml(person.email || "")}</div>${(person.parent1Phone || person.parent1Email) ? `<div class="meta">${escapeHtml(`${[person.parent1First, person.parent1Last].filter(Boolean).join(" ")}${person.parent1Phone ? ` · ${fmtPhone(person.parent1Phone)}` : ""}${person.parent1Email ? ` · ${person.parent1Email}` : ""}`)}</div>` : ""}<div class="enrollments">${pes.map(e => `<div class="tag">${escapeHtml(getEnrollmentLookupLabel(e))}</div>`).join("")}</div></section>`;
     }).join("");
     popup.document.write(`<!doctype html><html><head><title>Lookup Results</title><meta charset="utf-8"/><style>body{font-family:Arial,sans-serif;margin:32px;color:#222}h1{margin:0 0 6px;font-size:28px}.sub{color:#666;margin-bottom:18px}.filters{margin:0 0 22px;padding:12px 14px;background:#f7f5ef;border-radius:10px;font-size:14px}.count{font-weight:700;margin-bottom:18px}.card{border:1px solid #ddd;border-radius:12px;padding:16px;margin-bottom:12px;break-inside:avoid}.title{font-size:18px;font-weight:700;margin-bottom:6px}.student-num{font-size:12px;font-weight:700;color:#666;margin-left:8px}.meta{font-size:13px;color:#666;margin-bottom:4px}.enrollments{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px}.tag{font-size:12px;padding:4px 8px;background:#eef6f1;border-radius:999px;color:#1a6b3a}@media print{body{margin:20px}}</style></head><body><h1>Lookup Results</h1><div class="sub">${escapeHtml(fmtDate(today()))}</div><div class="filters">${escapeHtml(filters.length ? filters.join(" | ") : "No filters applied")}</div><div class="count">${lookupResults.length} ${lookupResults.length === 1 ? "student" : "students"} found</div>${cards || "<div>No results.</div>"}<script>window.onload=()=>window.print();</scr` + `ipt></body></html>`);
@@ -1543,7 +1522,7 @@ export default function App() {
               </div>
               {lookupResults.map(person => {
                 const fam = families.find(fm => fm.personIds && fm.personIds.includes(person.id));
-                const pes = enrollments.filter(e => e.personId === person.id && e.active);
+                const pes = enrollments.filter(e => e.personId === person.id && e.active && (selectedSemesterId === "all" || e.semesterId === selectedSemesterId));
                 return (
                   <div key={person.id} className="card" style={{ marginBottom: 12 }}>
                     <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10 }}>
@@ -1572,7 +1551,7 @@ export default function App() {
       const mailingTeacherOptions = (mailingProgramFilter === "juniors" ? juniorTeachers : mailingProgramFilter === "brothers" ? (adultTeachers.brothers || []) : mailingProgramFilter === "sisters" ? (adultTeachers.sisters || []) : [...juniorTeachers, ...(adultTeachers.brothers || []), ...(adultTeachers.sisters || [])]).map(t => ({ value: t.id, label: t.name })).sort((a, b) => a.label.localeCompare(b.label));
       const selectedMailingTeacher = mailingTeacherOptions.find(t => t.value === mailingTeacherFilter);
       persons.forEach(p => {
-        const progEnrolls = enrollments.filter(e => e.personId === p.id && e.active && (!mailingProgramFilter || e.program === mailingProgramFilter) && (!mailingTeacherFilter || e.teacherId === mailingTeacherFilter));
+        const progEnrolls = enrollments.filter(e => e.personId === p.id && e.active && (selectedSemesterId === "all" || e.semesterId === selectedSemesterId) && (!mailingProgramFilter || e.program === mailingProgramFilter) && (!mailingTeacherFilter || e.teacherId === mailingTeacherFilter));
         if (!progEnrolls.length) return;
         const progLabels = progEnrolls.map(e => PROGRAMS[e.program]).join(", ");
         if (p.email) emailMap[p.email] = emailMap[p.email] || { name: `${p.firstName} ${p.lastName}`, role: "Student", programs: progLabels };
