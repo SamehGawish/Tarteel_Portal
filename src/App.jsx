@@ -634,6 +634,41 @@ export default function App() {
   function handleLookupTeacherFilter(tf) { setLookupTeacherFilter(tf); runLookup(lookupQuery, lookupProgramFilter, lookupLevelFilter, lookupGenderFilter, tf, lookupPaymentFilter); }
   function handleLookupPaymentFilter(payf) { setLookupPaymentFilter(payf); runLookup(lookupQuery, lookupProgramFilter, lookupLevelFilter, lookupGenderFilter, lookupTeacherFilter, payf); }
 
+  async function exportLookupToExcel() {
+    if (!lookupResults.length) return;
+    let XLSX;
+    try { XLSX = await import("xlsx"); } catch { alert("Excel export needs the 'xlsx' package. Run: npm install xlsx"); return; }
+    const semLabel = selectedSemesterId === "all" ? "All Semesters" : ((semesters.find(s => s.id === selectedSemesterId) || {}).label || "");
+    const rows = lookupResults.map(person => {
+      const pes = enrollments.filter(e => e.personId === person.id && e.active && (selectedSemesterId === "all" || e.semesterId === selectedSemesterId));
+      return {
+        "Student #": person.studentNum || "",
+        "First Name": person.firstName || "",
+        "Last Name": person.lastName || "",
+        "Gender": person.gender || "",
+        "Age": person.age || "",
+        "DOB": person.dateOfBirth ? fmtDob(person.dateOfBirth) : "",
+        "Phone": person.phone ? fmtPhone(person.phone) : "",
+        "Email": person.email || "",
+        "Parent 1": [person.parent1First, person.parent1Last].filter(Boolean).join(" "),
+        "Parent 1 Phone": person.parent1Phone ? fmtPhone(person.parent1Phone) : "",
+        "Parent 1 Email": person.parent1Email || "",
+        "Parent 2": [person.parent2First, person.parent2Last].filter(Boolean).join(" "),
+        "Parent 2 Phone": person.parent2Phone ? fmtPhone(person.parent2Phone) : "",
+        "Parent 2 Email": person.parent2Email || "",
+        "Semester": semLabel,
+        "Enrollments": pes.map(getEnrollmentLookupLabel).join("; "),
+        "Payment Status": pes.map(e => getPaymentTypeLabel(e.paymentType)).join("; "),
+      };
+    });
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const keys = Object.keys(rows[0]);
+    ws["!cols"] = keys.map(k => ({ wch: Math.min(40, Math.max(k.length, ...rows.map(r => String(r[k] || "").length)) + 2) }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Lookup Results");
+    XLSX.writeFile(wb, `lookup-results-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  }
+
   function printLookupResults() {
     const popup = window.open("", "_blank", "width=960,height=1200"); if (!popup) { alert("Please allow pop-ups to print."); return; }
     const filters = [lookupQuery ? `Search: ${lookupQuery}` : null, lookupProgramFilter ? `Program: ${PROGRAMS[lookupProgramFilter]}` : null, lookupGenderFilter ? `Gender: ${lookupGenderFilter}` : null, lookupPaymentFilter ? `Payment: ${getPaymentTypeLabel(lookupPaymentFilter)}` : null].filter(Boolean);
@@ -1517,7 +1552,7 @@ export default function App() {
                 </div>
                 <div className="fg" style={{ marginTop: 12 }}><label>Payment Status</label><select value={lookupPaymentFilter} onChange={e => handleLookupPaymentFilter(e.target.value)}><option value="">All payment types</option>{PAYMENT_FILTER_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
                 {hasInput && <div style={{ marginTop: 10, fontSize: 12, color: "#888", fontWeight: 600 }}>{`${lookupResults.length} ${lookupResults.length === 1 ? "student" : "students"} found`}</div>}
-                {lookupResults.length > 0 && <div style={{ marginTop: 10 }}><button className="btn bo bsm" onClick={printLookupResults}>Print / Save PDF</button></div>}
+                {lookupResults.length > 0 && <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}><button className="btn bo bsm" onClick={printLookupResults}>Print / Save PDF</button><button className="btn bo bsm" onClick={exportLookupToExcel}>Save as Excel</button></div>}
                 {hasInput && !lookupResults.length && <div style={{ marginTop: 10, fontSize: 13, color: "#bbb" }}>No results.</div>}
               </div>
               {lookupResults.map(person => {
